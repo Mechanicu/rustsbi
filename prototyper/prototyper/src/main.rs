@@ -17,6 +17,7 @@ mod firmware;
 mod platform;
 mod riscv;
 mod sbi;
+mod tee;
 
 use core::arch::{asm, naked_asm};
 
