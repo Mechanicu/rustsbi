@@ -90,11 +90,20 @@ pub fn sbi_call_handler(
     a6: usize,
     a7: usize,
 ) -> FastResult {
+    use crate::tee::penglai::PENGLAI_PLATFORM;
+    use ::penglai::enclave::EID_PENGLAI_ENCLAVE;
+    use ::penglai::host::EID_PENGLAI_HOST;
     use sbi_spec::{base, hsm, legacy};
-    let mut ret = unsafe {
-        PLATFORM
-            .sbi
-            .handle_ecall(a7, a6, [ctx.a0(), a1, a2, a3, a4, a5])
+
+    let mut ret: rustsbi::SbiRet = match a7 {
+        EID_PENGLAI_ENCLAVE | EID_PENGLAI_HOST => unsafe {
+            PENGLAI_PLATFORM.handle_ecall(a7, a6, [ctx.a0(), a1, a2, a3, a4, a5])
+        },
+        _ => unsafe {
+            PLATFORM
+                .sbi
+                .handle_ecall(a7, a6, [ctx.a0(), a1, a2, a3, a4, a5])
+        },
     };
     if ret.is_ok() {
         match (a7, a6) {

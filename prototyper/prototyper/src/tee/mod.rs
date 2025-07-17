@@ -1,5 +1,4 @@
 //! TEE relative modules.
-//! 
+//!
 
-mod penglai;
-
+pub mod penglai;

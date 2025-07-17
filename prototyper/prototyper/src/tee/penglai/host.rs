@@ -1,10 +1,16 @@
 //! Penglai Secure Monitor host-side implementation in RustSBI.
-use rustsbi::SbiRet;
-use ::penglai::host::*;
 use super::smm::*;
+use ::penglai::host::*;
+use rustsbi::SbiRet;
+
+pub enum SMMRet {
+    Success,
+    NoMem,
+    Error,
+}
 
 #[inline]
-pub fn handle_ecall_fast(function: usize, param: [usize; 6]) -> rustsbi::SbiRet {
+pub fn handle_ecall_fast(function: usize, param: [usize; 6]) -> SbiRet {
     let ret = match function {
         // secure memory management functions
         // alloc secure memory for enclave
@@ -16,13 +22,11 @@ pub fn handle_ecall_fast(function: usize, param: [usize; 6]) -> rustsbi::SbiRet 
         // reclaim secure memory to host
         MEMORY_RECLAIM => secmem_reclaim(),
         // init secure memory manager
-        MM_INIT => secmem_manager_init(param[0], param[1]),                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
-        // enclave management
-
-        // unknown function
-        _ => SbiRet::invalid_param(),
-    };       
-    ret
+        MM_INIT => secmem_init(param[0], param[1]),
+        // unknown secure memory management function
+        _ => SMMRet::Error,
+    };
+    SbiRet::success(0)
 }
 
 // pub fn handle_ecall_full() {}

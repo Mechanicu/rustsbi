@@ -10,7 +10,6 @@ impl SecmemRegionAllocator for SecmemRegion {
             start: (start),
             len: len,
             allocator: LockedHeap::<SECMEM_MAX_ORDER>::empty(),
-            is_valid: true,
         }
     }
     #[inline]
@@ -28,8 +27,10 @@ impl SecmemRegionAllocator for SecmemRegion {
         self.allocator.lock().dealloc(ptr, layout);
     }
     #[inline]
-    fn check_used(&self) -> usize {
-        self.allocator.lock().stats_alloc_actual()
+    fn extend(&self, start: usize, len: usize) {
+        unsafe {
+            self.allocator.lock().add_to_heap(start, start + len);
+        }
     }
     #[inline]
     fn range_check(&self, start: usize, end: usize) -> bool {
@@ -37,5 +38,13 @@ impl SecmemRegionAllocator for SecmemRegion {
             return true;
         }
         return false;
+    }
+    #[inline]
+    fn check_used(&self) -> usize {
+        self.allocator.lock().stats_alloc_actual()
+    }
+    #[inline]
+    fn check_aval(&self) -> usize {
+        self.allocator.lock().stats_total_bytes() - self.allocator.lock().stats_alloc_actual()
     }
 }
