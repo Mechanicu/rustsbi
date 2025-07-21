@@ -60,8 +60,8 @@ pub fn get_boot_hart(opaque: usize, nonstandard_a2: usize) -> BootHart {
     }
 }
 
-static mut SBI_START_ADDRESS: usize = 0;
-static mut SBI_END_ADDRESS: usize = 0;
+pub static mut SBI_START_ADDRESS: usize = 0;
+pub static mut SBI_END_ADDRESS: usize = 0;
 static mut RODATA_START_ADDRESS: usize = 0;
 static mut RODATA_END_ADDRESS: usize = 0;
 

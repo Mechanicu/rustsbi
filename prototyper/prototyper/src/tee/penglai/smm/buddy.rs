@@ -33,7 +33,7 @@ impl SecmemRegionAllocator for SecmemRegion {
         }
     }
     #[inline]
-    fn range_check(&self, start: usize, end: usize) -> bool {
+    fn is_mem_overlap(&self, start: usize, end: usize) -> bool {
         if self.start < end && (self.start + self.len > start) {
             return true;
         }
