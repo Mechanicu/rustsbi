@@ -14,15 +14,14 @@
 //! protected by secure monitor.
 
 use super::host::SMMRet;
+use crate::cfg::PAGE_SIZE;
 use crate::firmware::{SBI_END_ADDRESS, SBI_START_ADDRESS};
 use buddy_system_allocator::LockedHeap;
-use core::alloc::Layout;
 use core::mem::MaybeUninit;
-use core::ptr::NonNull;
 use pmp::*;
 use riscv::register::{Permission, Range};
 use smm_helper::*;
-use spin::{Lazy, Mutex};
+use spin::Mutex;
 
 pub const SECMEM_MAX_ORDER: usize = 20;
 
@@ -30,15 +29,11 @@ mod buddy;
 mod pmp;
 mod smm_helper;
 
-pub trait SecmemRegionAllocator {
-    fn new(start: usize, end: usize) -> Self;
-    fn init(&self);
-    fn alloc(&self, layout: Layout) -> Result<NonNull<u8>, ()>;
-    fn dealloc(&self, ptr: NonNull<u8>, layout: Layout);
-    fn extend(&self, start: usize, len: usize);
-    fn is_mem_overlap(&self, start: usize, end: usize) -> bool;
-    fn check_used(&self) -> usize;
-    fn check_aval(&self) -> usize;
+#[repr(i16)]
+pub enum SecRegionIdx {
+    SecRegionInvalid = -1,
+    SecRegionSM = 0,
+    SecRegionDefault = PENGLAI_PMP_END,
 }
 
 pub struct SecmemRegion {
@@ -49,31 +44,62 @@ pub struct SecmemRegion {
 
 pub struct SecPMPRegion {
     pub slot: usize,
-    pub permission: Permission,
-    pub mode: Range,
+    pub hperm: Permission,
+    pub hmode: Range,
+    pub eperm: Permission,
+    pub emode: Range,
     pub is_valid: bool,
     pub mem_region: SecmemRegion,
 }
 
-static SEC_REGIONS: Lazy<Mutex<[SecPMPRegion; N_AVAL_PMP_REGION]>> = Lazy::new(|| {
-    // 初始化逻辑
-    let mut init_arr: [SecPMPRegion; N_AVAL_PMP_REGION] =
-        unsafe { MaybeUninit::uninit().assume_init() };
-    for (i, slot) in init_arr.iter_mut().enumerate() {
-        *slot = SecPMPRegion {
-            slot: i,
-            permission: Permission::NONE,
-            mode: Range::OFF,
+impl SecPMPRegion {
+    pub const fn new() -> Self {
+        Self {
+            slot: 0,
+            hperm: Permission::NONE,
+            hmode: Range::OFF,
+            eperm: Permission::NONE,
+            emode: Range::OFF,
             is_valid: false,
-            mem_region: SecmemRegion {
-                start: 0,
-                len: 0,
-                allocator: LockedHeap::<SECMEM_MAX_ORDER>::empty(),
-            },
-        };
+            mem_region: SecmemRegion::new(0, 0),
+        }
     }
-    Mutex::new(init_arr)
-});
+}
+
+struct SecRegion {
+    region: [SecPMPRegion; (PENGLAI_PMP_COUNT) as usize],
+    size: u32,
+}
+
+impl SecRegion {
+    pub const fn new() -> Self {
+        Self {
+            region: {
+                // 初始化逻辑
+                let mut init_arr: [SecPMPRegion; PENGLAI_PMP_COUNT as usize] =
+                    unsafe { MaybeUninit::uninit().assume_init() };
+                let ptr = init_arr.as_mut_ptr();
+                unsafe {
+                    let mut i = 0;
+                    while i < PENGLAI_PMP_COUNT as usize {
+                        ptr.add(i).write(SecPMPRegion::new());
+                        i += 1;
+                    }
+                }
+                init_arr
+            },
+            size: (0),
+        }
+    }
+    pub fn region(&self) -> &[SecPMPRegion; (PENGLAI_PMP_COUNT) as usize] {
+        &self.region
+    }
+    pub fn region_mut(&mut self) -> &mut [SecPMPRegion; (PENGLAI_PMP_COUNT) as usize] {
+        &mut self.region
+    }
+}
+
+static SEC_REGIONS: Mutex<SecRegion> = Mutex::new(SecRegion::new());
 
 /// PMP and secure memory bind array.
 ///
@@ -82,41 +108,41 @@ static SEC_REGIONS: Lazy<Mutex<[SecPMPRegion; N_AVAL_PMP_REGION]>> = Lazy::new(|
 pub fn secmem_init(start: usize, len: usize) -> SMMRet {
     // Init every secure PMP region metadata
 
-    // secure memory region must be aligned
-    if false == smm_helper::check_mem_align(start, len) {
+    // Secure memory region must be aligned to PAGE_SIZE.
+    if false == check_mem_align(start, len, PAGE_SIZE) {
         return SMMRet::Error;
     }
 
     // Get lock from here.
     let mut guard = SEC_REGIONS.lock();
+    let regions = guard.region_mut();
+
+    // New region must not overlap with exsisting regions.
+    if true == check_mem_overlap(regions, start, len) {
+        return SMMRet::Error;
+    }
+
     // Init secure monitor PMP regions (only for memory overlap check, not used for
     // secure memory alloc), usually this will take at least one PMP slot to fully protect
     // whole Rust prototyper.
-    get_region(&mut guard, PMP4PROTECT_SM, |r| {
-        r.permission = Permission::NONE;
-        r.mode = Range::NAPOT;
-        r.is_valid = true;
-        unsafe {
-            r.mem_region.start = SBI_START_ADDRESS;
-            r.mem_region.len = SBI_END_ADDRESS - SBI_START_ADDRESS;
-        }
-    });
+    let sm_region = &mut regions[PmpIdx::PmpSM as usize];
+    sm_region.is_valid = true;
+    unsafe {
+        sm_region.mem_region.start = SBI_START_ADDRESS;
+        sm_region.mem_region.len = SBI_END_ADDRESS - SBI_START_ADDRESS;
+    }
 
     // Init first secure memory PMP regions. This memory region will protected by PMP slot
     // indexd by @pmp_idx and used for secure memory alloc.
-    if let Some(unused_region) = get_unused_region(&mut guard) {
+    if let Some(unused_region) = get_unused_region(regions) {
         unused_region.is_valid = true;
-        unused_region.permission = Permission::NONE;
-        unused_region.mode = Range::NAPOT;
+        unused_region.hperm = Permission::NONE;
+        unused_region.hmode = Range::NAPOT;
+        unused_region.eperm = Permission::RWX;
+        unused_region.emode = Range::NAPOT;
         unused_region.mem_region.len = len;
         unused_region.mem_region.start = start;
-        unsafe {
-            unused_region
-                .mem_region
-                .allocator
-                .lock()
-                .init(unused_region.mem_region.start, unused_region.mem_region.len);
-        }
+        unused_region.mem_region.init(start, len);
     } else {
         // Cannot find any unused secure region.
         return SMMRet::Error;
