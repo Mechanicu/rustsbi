@@ -1,9 +1,19 @@
 //! Penglai PMP extension (Penglai Secure Monitor) implementation in RustSBI.
+use super::pmpm::PmpBitmap;
 use ::penglai::enclave::EID_PENGLAI_ENCLAVE;
 use ::penglai::host::EID_PENGLAI_HOST;
 use rustsbi::{RustSBI, SbiRet};
 
+mod smm;
+
 pub const ENCLAVE_HASH_SIZE: u8 = 32;
+
+#[repr(u8)]
+pub enum PenglaiPmpIdx {
+    PmpSM = 0,
+    PmpTemp = 1,
+    PmpDefault = PENGLAI_PMP_END,
+}
 
 struct phymem_region {
     hpa: usize,
@@ -49,7 +59,16 @@ pub(crate) struct enclave_metadata {
 
 mod enclave;
 mod host;
-mod smm;
+
+pub const PENGLAI_PMP_START: u8 = 0;
+pub const PENGLAI_PMP_END: u8 = 15;
+pub const PENGLAI_PMP_COUNT: u8 = PENGLAI_PMP_END - PENGLAI_PMP_START + 1;
+
+pub const PENGLAI_DEFAULT_MASK: usize = 1 << (PenglaiPmpIdx::PmpSM as u8)
+    | 1 << (PenglaiPmpIdx::PmpTemp as u8)
+    | 1 << (PenglaiPmpIdx::PmpDefault as u8);
+static PENGLAI_PMP_BITMAP: PmpBitmap =
+    PmpBitmap::new(PENGLAI_PMP_START, PENGLAI_PMP_END, PENGLAI_DEFAULT_MASK);
 
 pub(crate) struct PenglaiPlatform {}
 

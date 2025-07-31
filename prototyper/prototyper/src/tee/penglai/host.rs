@@ -3,12 +3,6 @@ use super::smm::*;
 use ::penglai::host::*;
 use rustsbi::SbiRet;
 
-pub enum SMMRet {
-    Success,
-    NoMem,
-    Error,
-}
-
 #[inline]
 pub fn handle_ecall_fast(function: usize, param: [usize; 6]) -> SbiRet {
     let ret = match function {

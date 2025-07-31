@@ -1,6 +1,6 @@
 //! Secure memory manager helper functions.
 //!
-use super::{SecPMPRegion, pmp::PENGLAI_PMP_COUNT};
+use super::{super::PENGLAI_PMP_COUNT, SecPMPRegion};
 
 /// Check if new secure memory region is PAGE_SIZE align and not wrap around.
 pub fn check_mem_align(addr: usize, len: usize, align: usize) -> bool {
@@ -27,10 +27,12 @@ pub fn check_mem_overlap(
 }
 
 /// Get index of first unused region.
-pub fn get_unused_region(regions: &mut [SecPMPRegion; PENGLAI_PMP_COUNT as usize]) -> Option<&mut SecPMPRegion> {
+pub fn get_unused_region(
+    regions: &mut [SecPMPRegion; PENGLAI_PMP_COUNT as usize],
+) -> Option<&mut SecPMPRegion> {
     for region in regions.iter_mut() {
         if region.is_valid == false {
-            return Some(region)
+            return Some(region);
         }
     }
     return None;
