@@ -31,6 +31,7 @@ pub fn switch(mut ctx: FastContext, start_addr: usize, opaque: usize) -> FastRes
 /// Handle machine software inter-processor interrupts.
 #[inline]
 pub fn msoft_ipi_handler() {
+    use crate::tee::pmpm;
     use ipi::get_and_reset_ipi_type;
     ipi::clear_msip();
     let ipi_type = get_and_reset_ipi_type();
@@ -44,6 +45,10 @@ pub fn msoft_ipi_handler() {
     // Handle fence operation
     if (ipi_type & ipi::IPI_TYPE_FENCE) != 0 {
         rfence::rfence_handler();
+    }
+    // Handle PMP synchronous operation.
+    if (ipi_type & ipi::IPI_TYPE_PMP) != 0 {
+        pmpm::pmpsync::ipi_handler();
     }
 }
 
