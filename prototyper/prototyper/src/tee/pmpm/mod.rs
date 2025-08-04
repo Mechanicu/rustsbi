@@ -209,7 +209,7 @@ impl PmpBitmap {
         }
     }
     fn check_idx(&self, idx: u8) {
-        if idx < self.start || idx > self.end || idx & (idx - 1) != 0 {
+        if idx < self.start || idx > self.end {
             panic!(
                 "Index {} out of bounds for Bitmap of {}~{}",
                 idx, self.start, self.end

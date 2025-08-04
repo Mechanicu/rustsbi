@@ -13,7 +13,7 @@
 //! 4. PMP slot N-1 (last PMP slot): used fot grant the kernel access permissions of memory not
 //! protected by secure monitor.
 use super::PenglaiPmpIdx;
-use super::{PENGLAI_DEFAULT_MASK, PENGLAI_PMP_BITMAP, PENGLAI_PMP_COUNT};
+use super::{PENGLAI_PMP_BITMAP, PENGLAI_PMP_COUNT, PENGLAI_RESERVED_MASK};
 use crate::cfg::PAGE_SIZE;
 use crate::firmware::{SBI_END_ADDRESS, SBI_START_ADDRESS};
 use crate::tee::pmpm::{tee_get_pmp, tee_pmp_clean_sync, tee_pmp_sync};
@@ -99,7 +99,7 @@ impl SecRegion {
 
 static SEC_REGIONS: Mutex<SecRegion> = Mutex::new(SecRegion::new());
 
-/// Check if new secure memory region is PAGE_SIZE align and not wrap around.
+/// Check if new secure memory region is PENGLAI_SMEM_ALIGN align and not wrap around.
 pub fn check_mem_align(addr: usize, len: usize, align: usize) -> bool {
     if addr & (align - 1) != 0 || len < align || len & (align - 1) != 0 || addr + len < addr {
         return false;
@@ -202,13 +202,9 @@ pub fn retrive_kernel_access(addr: usize, len: usize) -> SbiRet {
 }
 
 /// Penglai secure region and PMP slot init.
-pub fn secmem_init(start: usize, len: usize) -> SbiRet {
-    // Secure memory region must be aligned to PAGE_SIZE.
-    if false == check_mem_align(start, len, PAGE_SIZE) {
-        return SbiRet::invalid_param();
-    }
-
+pub fn secmem_init(addr: usize, len: usize) -> SbiRet {
     // Get lock from here.
+    info!("Secmem init start");
     let mut guard = SEC_REGIONS.lock();
     let regions = guard.region_mut();
 
@@ -227,10 +223,12 @@ pub fn secmem_init(start: usize, len: usize) -> SbiRet {
     if set_pmp_host_sync(&sm_region) == SbiRet::invalid_param() {
         return SbiRet::failed();
     }
+    info!("Secmem init, SM region init success");
 
     // Init default region, used for granting host with full memory access
     // when memory not protected by PMP.
     let default_region = &mut regions[PenglaiPmpIdx::PmpDefault as usize];
+    // To avoid memory overlap check, default region set as unused.
     default_region.is_valid = false;
     default_region.mem_region.start = 0;
     default_region.mem_region.len = usize::MAX;
@@ -241,43 +239,72 @@ pub fn secmem_init(start: usize, len: usize) -> SbiRet {
     if set_pmp_host_sync(default_region) == SbiRet::invalid_param() {
         return SbiRet::failed();
     }
+    info!("Secmem init, Default region init success");
 
     // Init temporary region, used for temporarily granting host with access of secure memory.
     let temp_region = &mut regions[PenglaiPmpIdx::PmpTemp as usize];
     temp_region.is_valid = true;
     temp_region.hmode = Range::NAPOT;
     temp_region.hperm = Permission::RWX;
+    info!("Secmem init, Temporary region init success");
 
-    // New region must not overlap with exsisting regions.
-    if check_mem_overlap(regions, start, len) == None {
-        return SbiRet::failed();
-    }
-
-    // Init first secure memory region. This memory region will protected by PMP slot
-    // indexd by @pmp_idx and used for secure memory alloc.
-    let unused_region = get_unused_region(regions).unwrap();
-    // Alloc a PMP slot for new secure region, should always success here.
-    unused_region.slot = PENGLAI_PMP_BITMAP
-        .alloc()
-        .expect("alloc_slot() should never fail here");
-    unused_region.is_valid = true;
-    unused_region.hperm = Permission::NONE;
-    unused_region.hmode = Range::NAPOT;
-    unused_region.eperm = Permission::RWX;
-    unused_region.emode = Range::NAPOT;
-    unused_region.mem_region.len = len;
-    unused_region.mem_region.start = start;
-    unused_region.mem_region.init(start, len);
-    // Set PMP slot for new secure region.
-    if set_pmp_host_sync(unused_region) == SbiRet::invalid_param() {
-        return SbiRet::failed();
-    }
-
-    SbiRet::success(0)
+    drop(guard);
+    // Reserved regions init successfully, init first region for enclave.
+    secmem_extend(addr, len)
 }
 
-pub fn secmem_extend() -> SbiRet {
-    SbiRet::success(0)
+/// Penglai extend secure memory.
+///
+/// This function accept a physical memory area and use memory to init new secure region.
+pub fn secmem_extend(addr: usize, len: usize) -> SbiRet {
+    info!("Extend secmem, check align,{} {}", addr, len);
+    // Addr and size should align to PENGLAI_SMEM_ALIGN.
+    if false == check_mem_align(addr, len, PENGLAI_SMEM_ALIGN) {
+        return SbiRet::invalid_param();
+    }
+    let mut guard = SEC_REGIONS.lock();
+    let regions = guard.region_mut();
+
+    // New region must not overlap with exsisting regions.
+    if check_mem_overlap(regions, addr, len) == None {
+        return SbiRet::invalid_param();
+    }
+    // Alloc a free PMP slot for new region.
+    let new_slot = match PENGLAI_PMP_BITMAP.alloc() {
+        Some(slot) => slot,
+        None => {
+            error!("Extend secmem, alloc PMP slot failed!");
+            return SbiRet::failed();
+        }
+    };
+    info!("Extend secmem, new slot {}", new_slot);
+    // Init secure memory region that used for secure memory alloc.
+    let new_region = match get_unused_region(regions) {
+        Some(region) => {
+            region.slot = new_slot;
+            region.is_valid = true;
+            region.hperm = Permission::NONE;
+            region.hmode = Range::NAPOT;
+            region.eperm = Permission::RWX;
+            region.emode = Range::NAPOT;
+            region.mem_region.len = len;
+            region.mem_region.start = addr;
+            region.mem_region.init(addr, len);
+            region
+        }
+        None => {
+            error!("Extend secmem, alloc region failed!");
+            PENGLAI_PMP_BITMAP.free(new_slot, !PENGLAI_RESERVED_MASK);
+            return SbiRet::failed();
+        }
+    };
+    info!(
+        "Extend secmem, new region {} {} {}, align:{}",
+        new_region.slot, new_region.mem_region.start, new_region.mem_region.len, PENGLAI_SMEM_ALIGN
+    );
+
+    // Set PMP slot to protected new secure region.
+    set_pmp_host_sync(new_region)
 }
 
 pub fn secmem_reclaim() -> SbiRet {
@@ -291,7 +318,7 @@ pub fn secmem_alloc(reqsize: usize) -> Option<(usize, usize)> {
     let emem_layout: Layout = Layout::from_size_align(reqsize, PENGLAI_SMEM_ALIGN).unwrap();
     // Check every secure region (except reserved regions) and try to alloc needed enclave mem.
     for (idx, region) in regions.iter().enumerate() {
-        if (PENGLAI_DEFAULT_MASK & (1 << idx) == 0) && region.is_valid == true {
+        if (PENGLAI_RESERVED_MASK & (1 << idx) == 0) && region.is_valid == true {
             if let Ok(ptr) = region.mem_region.alloc(emem_layout) {
                 let uptr = ptr.as_ptr() as usize;
                 info!(
@@ -308,13 +335,13 @@ pub fn secmem_alloc(reqsize: usize) -> Option<(usize, usize)> {
     None
 }
 
-/// Penglai free enclave memory to original secure region.
+/// Penglai free enclave memory back to secure region.
 ///
-/// This function shouldn't exposed to user, it's hard to make sure U/S mode
+/// This function may not exposed to user, it's hard to make sure U/S mode
 /// allocate and free enclave memory in same secure region.
 pub fn secmem_free(addr: usize, len: usize) -> SbiRet {
-    // Addr and size should align to PAGE_SIZE.
-    if false == check_mem_align(addr, len, PAGE_SIZE) {
+    // Addr and size should align to PENGLAI_SMEM_ALIGN.
+    if false == check_mem_align(addr, len, PENGLAI_SMEM_ALIGN) {
         return SbiRet::invalid_param();
     }
     let guard = SEC_REGIONS.lock();
@@ -323,7 +350,7 @@ pub fn secmem_free(addr: usize, len: usize) -> SbiRet {
     let emem_layout: Layout = Layout::from_size_align(len, PENGLAI_SMEM_ALIGN).unwrap();
     // Check if any region (except reserved regions) contains enclave mem and try to free mem.
     if let Some(idx) = check_mem_contained(regions, addr, len)
-        && (PENGLAI_DEFAULT_MASK & (1 << idx) == 0)
+        && (PENGLAI_RESERVED_MASK & (1 << idx) == 0)
     {
         regions[idx].mem_region.dealloc(
             unsafe { NonNull::new_unchecked(addr as *mut u8) },

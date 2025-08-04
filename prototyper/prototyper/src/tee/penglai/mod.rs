@@ -64,11 +64,11 @@ pub const PENGLAI_PMP_START: u8 = 0;
 pub const PENGLAI_PMP_END: u8 = 15;
 pub const PENGLAI_PMP_COUNT: u8 = PENGLAI_PMP_END - PENGLAI_PMP_START + 1;
 
-pub const PENGLAI_DEFAULT_MASK: usize = 1 << (PenglaiPmpIdx::PmpSM as u8)
+pub const PENGLAI_RESERVED_MASK: usize = 1 << (PenglaiPmpIdx::PmpSM as u8)
     | 1 << (PenglaiPmpIdx::PmpTemp as u8)
     | 1 << (PenglaiPmpIdx::PmpDefault as u8);
 static PENGLAI_PMP_BITMAP: PmpBitmap =
-    PmpBitmap::new(PENGLAI_PMP_START, PENGLAI_PMP_END, PENGLAI_DEFAULT_MASK);
+    PmpBitmap::new(PENGLAI_PMP_START, PENGLAI_PMP_END, PENGLAI_RESERVED_MASK);
 
 pub(crate) struct PenglaiPlatform {}
 

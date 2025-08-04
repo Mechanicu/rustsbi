@@ -7,11 +7,12 @@ use core::sync::atomic::Ordering;
 use rustsbi::SbiRet;
 
 static IS_CREATE_ENCLAVE: AtomicBool = AtomicBool::new(false);
+static IS_SM_INITED: AtomicBool = AtomicBool::new(false);
 
-/// Request @PMPTemp or release it.
+/// Flag enable/disable function.
 #[inline]
-fn set_enclave_create_flag(flag: bool) -> SbiRet {
-    match IS_CREATE_ENCLAVE.compare_exchange_weak(!flag, flag, Ordering::SeqCst, Ordering::SeqCst) {
+fn set_flag(state: bool, flag: &AtomicBool) -> SbiRet {
+    match flag.compare_exchange_weak(!state, state, Ordering::SeqCst, Ordering::SeqCst) {
         Ok(_) => SbiRet::success(0),
         Err(_) => SbiRet::failed(),
     }
@@ -57,7 +58,7 @@ fn sm2host<T: Copy>(hptr: usize, src: T) -> SbiRet {
 /// Penglai PMP enclave memory allocation.
 fn alloc_enclave_mem(hptr: usize) -> SbiRet {
     // Only one enclave can in CREATE status.
-    if set_enclave_create_flag(true) == SbiRet::failed() {
+    if set_flag(true, &IS_CREATE_ENCLAVE) == SbiRet::failed() {
         return SbiRet::already_started();
     }
     info!("Alloc enclave mem start, prepare enclave create");
@@ -108,20 +109,35 @@ fn free_enclave_mem(hptr: usize) -> SbiRet {
 }
 
 #[inline]
+fn smm_init(addr: usize, len: usize) -> SbiRet {
+    // Only init once
+    if set_flag(true, &IS_SM_INITED) == SbiRet::failed() {
+        return SbiRet::already_available();
+    }
+    // Try to init secure memory management.
+    let sbiret = secmem_init(addr, len);
+    if sbiret != SbiRet::success(0) {
+        // Reset INIT state if failed.
+        set_flag(false, &IS_SM_INITED);
+    }
+    sbiret
+}
+
+#[inline]
 pub fn handle_ecall_fast(function: usize, param: [usize; 6]) -> SbiRet {
     match function {
-        // secure memory management functions
-        // alloc secure memory for enclave
+        // secure memory management functions.
+        // alloc secure memory for enclave.
         ALLOC_ENCLAVE_MM => alloc_enclave_mem(param[0]),
-        // free secure memory of enclave
+        // free secure memory of enclave.
         FREE_ENCLAVE_MEM => free_enclave_mem(param[0]),
-        // extend secure memory from host
-        MEMORY_EXTEND => secmem_extend(),
-        // reclaim secure memory to host
+        // extend secure memory from host.
+        MEMORY_EXTEND => secmem_extend(param[0], param[1]),
+        // reclaim secure memory to host (dummy interface for now).
         MEMORY_RECLAIM => secmem_reclaim(),
-        // init secure memory manager
-        MM_INIT => secmem_init(param[0], param[1]),
-        // unknown secure memory management function
+        // init secure memory manager.
+        MM_INIT => smm_init(param[0], param[1]),
+        // unknown secure memory management function.
         _ => return SbiRet::invalid_param(),
     };
     SbiRet::success(0)
