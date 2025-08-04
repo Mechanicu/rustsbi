@@ -226,14 +226,14 @@ impl SbiIpi {
             }
         }
 
-        let sender = pmpm::pmpsync::local_pmpctx().unwrap();
+        let sender = pmpm::local_pmpctx().unwrap();
         // Send fence operations to target harts
         for hart_id in 0..=self.max_hart_id {
             if !hart_mask.has_bit(hart_id) {
                 continue;
             }
             sender.add();
-            if let Some(receiver) = pmpm::pmpsync::remote_pmpctx(hart_id) {
+            if let Some(receiver) = pmpm::remote_pmpctx(hart_id) {
                 receiver.set(config);
                 if set_ipi_type(hart_id, IPI_TYPE_PMP) == 0 {
                     self.set_msip(hart_id);

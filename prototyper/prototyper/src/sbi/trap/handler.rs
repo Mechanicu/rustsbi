@@ -48,7 +48,7 @@ pub fn msoft_ipi_handler() {
     }
     // Handle PMP synchronous operation.
     if (ipi_type & ipi::IPI_TYPE_PMP) != 0 {
-        pmpm::pmpsync::ipi_handler();
+        pmpm::ipi_handler();
     }
 }
 
