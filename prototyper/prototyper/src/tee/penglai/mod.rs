@@ -15,18 +15,18 @@ pub enum PenglaiPmpIdx {
     PmpDefault = PENGLAI_PMP_END,
 }
 
-struct phymem_region {
+struct PhyMemRegion {
     hpa: usize,
     len: usize,
 }
 
-struct ocall_arg {
+struct OcallArgs {
     func_id: usize,
     syscall_num: usize,
     args: [usize; 2],
 }
 
-enum enclave_state {
+enum EnclaveState {
     DESTROYED = -1,
     INVALID = 0,
     FRESH = 1,
@@ -35,21 +35,21 @@ enum enclave_state {
     STOPPED,
 }
 
-pub(crate) struct enclave_metadata {
+pub(crate) struct EnclaveMetadata {
     // Secure mem region, @free record unused mem size in @sec.
-    sec: phymem_region,
+    sec: PhyMemRegion,
     free: usize,
     // Unsecure mem: for enclave to host APP IPC.
-    ubuf: phymem_region,
+    ubuf: PhyMemRegion,
     // Unsecure mem: for enclave to host OS IPC.
-    kbuf: phymem_region,
+    kbuf: PhyMemRegion,
 
     // Enclave root page table.
     ept: usize,
     // Enclave entry PC.
     entry: usize,
     // Enclave current status.
-    state: enclave_state,
+    state: EnclaveState,
 
     // Enclave measurement value.
     hash: [u8; ENCLAVE_HASH_SIZE as usize],

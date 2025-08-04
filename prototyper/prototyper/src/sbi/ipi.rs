@@ -195,7 +195,7 @@ impl SbiIpi {
     }
 
     /// Send IPI for PMP configuration synchronous.
-    pub fn send_ipi_by_pmp(&self, ctx: pmpm::PmpConfig) -> SbiRet {
+    pub fn send_ipi_by_pmp(&self, config: pmpm::PmpConfig) -> SbiRet {
         let mut hart_mask = hart_mask_clear(HartMask::all(), current_hartid());
 
         for hart_id in 0..=self.max_hart_id {
@@ -234,7 +234,7 @@ impl SbiIpi {
             }
             sender.add();
             if let Some(receiver) = pmpm::pmpsync::remote_pmpctx(hart_id) {
-                receiver.set(ctx);
+                receiver.set(config);
                 if set_ipi_type(hart_id, IPI_TYPE_PMP) == 0 {
                     self.set_msip(hart_id);
                 }

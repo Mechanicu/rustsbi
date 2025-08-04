@@ -6,6 +6,14 @@
 pub const EID_PENGLAI_HOST: usize = 0x100100;
 pub use fid::*;
 
+/// Request arguments for allocate enclave memory.
+#[derive(Clone, Copy)]
+pub struct EnclaveMemArgs {
+    pub reqsize: usize,
+    pub addr: usize,
+    pub rspsize: usize,
+}
+
 mod fid {
     /// Feature ID for init secure memory management.
     #[doc(alias = "SBI_MM_INIT")]

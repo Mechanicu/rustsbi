@@ -42,6 +42,13 @@ impl SecmemRegion {
         return false;
     }
     #[inline]
+    pub fn is_mem_contained(&self, start: usize, end: usize) -> bool {
+        if self.start <= start && (self.start + self.len >= end) {
+            return true;
+        }
+        return false;
+    }
+    #[inline]
     pub fn check_used(&self) -> usize {
         self.allocator.lock().stats_alloc_actual()
     }
