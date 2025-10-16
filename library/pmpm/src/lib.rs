@@ -5,6 +5,8 @@
 //! The module consists of two parts: bitmap-based PMP slot management and software interrupt-based
 //! PMP synchronization implementation.
 #![no_std]
+#[allow(unused)]
+pub const MAX_PMP_ENTRY_COUNT: u8 = 16;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 use riscv::register::{
@@ -62,35 +64,34 @@ impl PmpBitmap {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct PmpSlice {
-    num_bytes: usize,
+pub struct MemSlice {
+    size: usize,
     pa_lo: usize,
     pa_hi: usize,
 }
 
-impl PmpSlice {
-    pub fn new(num_bytes: usize, pa_lo: usize, pa_hi: usize) -> Self {
-        PmpSlice {
-            num_bytes,
-            pa_lo,
-            pa_hi,
-        }
+impl MemSlice {
+    pub fn new(size: usize, pa_lo: usize, pa_hi: usize) -> Self {
+        MemSlice { size, pa_lo, pa_hi }
     }
     #[inline]
     pub fn size(&self) -> usize {
-        self.num_bytes
+        self.size
     }
     pub fn lo(&self) -> usize {
         self.pa_lo
     }
-    pub fn hi(&self) -> usize {
-        self.pa_hi
+    pub fn start(&self) -> usize {
+        self.pa_lo
+    }
+    pub fn end(&self) -> usize {
+        self.pa_lo + self.size - 1
     }
 }
 
 #[inline]
-fn check_pmp_region(slice: PmpSlice) -> bool {
-    let len = slice.num_bytes;
+fn check_pmp_region(slice: MemSlice) -> bool {
+    let len = slice.size;
     let addr = slice.pa_lo;
     // len must be power of 2 and no less than 4, addr must be aligned to len
     if len < 4 || len & (len - 1) != 0 || addr & (len - 1) != 0 {
@@ -101,9 +102,9 @@ fn check_pmp_region(slice: PmpSlice) -> bool {
 
 // TODO: Under 32-bit architecture, both length and address may overflow and need to be fixed
 // Encode addr to PMP addr.
-pub fn encode_pmp_addr(slice: PmpSlice, mode: Range) -> Option<usize> {
+pub fn encode_pmp_addr(slice: MemSlice, mode: Range) -> Option<usize> {
     let addr = slice.pa_lo;
-    let len = slice.num_bytes;
+    let len = slice.size;
     match mode {
         Range::NAPOT => {
             if check_pmp_region(slice) {
@@ -119,28 +120,24 @@ pub fn encode_pmp_addr(slice: PmpSlice, mode: Range) -> Option<usize> {
 }
 // TODO: Under 32-bit architecture, both length and address may overflow and need to be fixed
 // Decode addr from PMP addr.
-pub fn decode_pmp_addr(pmp_addr: usize, mode: Range) -> PmpSlice {
+pub fn decode_pmp_addr(pmp_addr: usize, mode: Range) -> MemSlice {
     let mut addr = pmp_addr;
     match mode {
         Range::NAPOT => {
             let order = addr.trailing_ones();
             addr &= !((1 << (order + 1)) - 1);
-            PmpSlice {
-                pa_lo: addr << 2,
-                pa_hi: addr.rotate_left(2) & 0b11,
-                num_bytes: 1 << (order + 3),
-            }
+            MemSlice::new(1 << (order + 3), addr << 2, 0)
         }
-        Range::NA4 => PmpSlice::new(4, pmp_addr << 2, pmp_addr.rotate_left(2) & 0b11),
-        Range::TOR => PmpSlice::new(0, pmp_addr << 2, pmp_addr.rotate_left(2) & 0b11),
-        Range::OFF => PmpSlice::new(0, 0, 0),
+        Range::NA4 => MemSlice::new(4, pmp_addr << 2, 0),
+        Range::TOR => MemSlice::new(0, pmp_addr << 2, 0),
+        Range::OFF => MemSlice::new(0, 0, 0),
     }
 }
 
 #[allow(unused)]
 #[inline]
 /// Get PMP entry @idx on local hart.
-pub fn get_pmp_entry(idx: u8) -> (PmpSlice, Pmp) {
+pub fn get_pmp_entry(idx: u8) -> (MemSlice, Pmp) {
     let (pmp_addr, pmp_config) = get_pmp_reg(idx);
     (decode_pmp_addr(pmp_addr, pmp_config.range), pmp_config)
 }
@@ -148,7 +145,7 @@ pub fn get_pmp_entry(idx: u8) -> (PmpSlice, Pmp) {
 #[allow(unused)]
 #[inline]
 /// Set PMP entry @idx on local hart.
-pub fn set_pmp_entry(idx: u8, slice: PmpSlice, mode: Range, perm: Permission) {
+pub fn set_pmp_entry(idx: u8, slice: MemSlice, mode: Range, perm: Permission) {
     if let Some(pmp_addr) = encode_pmp_addr(slice, mode) {
         set_pmp_reg(idx, pmp_addr, mode, perm)
     }
