@@ -13,7 +13,7 @@ members = [
     "prototyper/prototyper",
     "prototyper/bench-kernel",
     "prototyper/test-kernel",
-    "xtask",
+    "xtask", "library/smm",
 ]
 default-members = [
     "library/macros",

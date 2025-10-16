@@ -3,7 +3,7 @@ use crate::riscv::current_hartid;
 use crate::sbi::fifo::{Fifo, FifoError};
 use crate::sbi::trap_stack::ROOT_STACK;
 use core::sync::atomic::{AtomicU32, Ordering};
-use pmpm::{PmpSlice, set_pmp_entry};
+use pmpm::{MemSlice, set_pmp_entry};
 use riscv::register::{Permission, Range};
 use rustsbi::SbiRet;
 use spin::mutex::Mutex;
@@ -12,7 +12,7 @@ use spin::mutex::Mutex;
 #[derive(Clone, Copy, Debug)]
 pub struct PmpSyncContext {
     /// PMP addr info.
-    slice: PmpSlice,
+    slice: MemSlice,
     /// PMP addr range mode.
     mode: Range,
     /// Permission for PMP entry, R/W/X/N
@@ -155,7 +155,7 @@ pub(crate) fn pmpsync_handler() {
 #[allow(unused)]
 #[inline]
 /// Set PMP entry @idx on every hart.
-pub fn set_pmp_slot(idx: u8, slice: PmpSlice, mode: Range, perm: Permission) -> SbiRet {
+pub fn set_pmp_slot(idx: u8, slice: MemSlice, mode: Range, perm: Permission) -> SbiRet {
     // Set other harts first.
     let sbi_ret = unsafe { PLATFORM.sbi.ipi.as_ref() }
         .unwrap()
@@ -174,5 +174,5 @@ pub fn set_pmp_slot(idx: u8, slice: PmpSlice, mode: Range, perm: Permission) -> 
 #[inline]
 /// Clean PMP entry @idx on every hart.
 pub fn clean_pmp_slot(idx: u8) -> SbiRet {
-    set_pmp_slot(idx, PmpSlice::new(0, 0, 0), Range::OFF, Permission::NONE)
+    set_pmp_slot(idx, MemSlice::new(0, 0, 0), Range::OFF, Permission::NONE)
 }
