@@ -5,6 +5,8 @@
 //! The module consists of two parts: bitmap-based PMP slot management and software interrupt-based
 //! PMP synchronization implementation.
 #![no_std]
+#[allow(unused)]
+pub const MAX_PMP_ENTRY_COUNT : u8 = 16;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 use riscv::register::{
