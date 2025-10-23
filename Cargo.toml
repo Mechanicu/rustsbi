@@ -10,10 +10,11 @@ members = [
     "library/riscv-cove-rt",
     "library/penglai",
     "library/pmpm",
+    "library/smm",
     "prototyper/prototyper",
     "prototyper/bench-kernel",
     "prototyper/test-kernel",
-    "xtask", "library/smm",
+    "xtask",
 ]
 default-members = [
     "library/macros",

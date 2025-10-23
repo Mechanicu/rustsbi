@@ -23,6 +23,12 @@ impl<const ORDER: usize> SecMemAllocator<ORDER> for DefaultAllocator<ORDER> {
     }
     fn free(&mut self, ptr: NonNull<u8>, layout: Layout) {}
     fn init(&mut self, slice: MemSlice) {}
+    fn avaliable(&self) -> usize {
+        0
+    }
+    fn total(&self) -> usize {
+        0
+    }
 }
 
 /// Memory allocation style of Penglai. Penglai supports enclaves sharing a
@@ -44,6 +50,12 @@ impl<const ORDER: usize> SecMemAllocator<ORDER> for PenglaiAllocator<ORDER> {
     fn free(&mut self, ptr: NonNull<u8>, layout: Layout) {
         self.buddy.dealloc(ptr, layout);
     }
+    fn avaliable(&self) -> usize {
+        self.buddy.stats_alloc_actual()
+    }
+    fn total(&self) -> usize {
+        self.buddy.stats_total_bytes()
+    }
 }
 
 /// Memory allocation style of Keystone. Enclaves in Keystone exclusively occupy
@@ -52,7 +64,7 @@ impl<const ORDER: usize> SecMemAllocator<ORDER> for PenglaiAllocator<ORDER> {
 impl<const ORDER: usize> SecMemAllocator<ORDER> for KeystoneAllocator<ORDER> {
     fn new() -> Self {
         Self {
-            area: (MemSlice::new(0, 0), false),
+            area: (MemSlice::new(0, 0, 0), false),
         }
     }
     fn init(&mut self, slice: MemSlice) {
@@ -74,12 +86,23 @@ impl<const ORDER: usize> SecMemAllocator<ORDER> for KeystoneAllocator<ORDER> {
         }
         self.area.1 = true;
     }
+    fn avaliable(&self) -> usize {
+        if self.area.1 == true {
+            self.area.0.size()
+        } else {
+            0
+        }
+    }
+    fn total(&self) -> usize {
+        self.area.0.size()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
+    use alloc::boxed::Box;
+    use alloc::vec::Vec;
     const HEAP_SIZE: usize = 1 << 12 << 4;
 
     /// Test utility: Creates a MemSlice by leaking a Boxed array, simulating a static memory area.
@@ -88,7 +111,7 @@ mod tests {
         let boxed_memory: Box<[u8; HEAP_SIZE]> = Box::new([0; HEAP_SIZE]);
         let leaked_slice: &'static mut [u8] = Box::leak(boxed_memory);
         let start_addr = leaked_slice.as_mut_ptr() as usize;
-        MemSlice::new(HEAP_SIZE, start_addr)
+        MemSlice::new(HEAP_SIZE, start_addr, 0)
     }
 
     /// Test utility: Creates a Layout object.
@@ -104,11 +127,11 @@ mod tests {
         let raw_ptr = ptr.as_ptr();
 
         // 1. Write: Fill the entire block with the pattern (memset operation)
-        std::ptr::write_bytes(raw_ptr, pattern, size);
+        unsafe { core::ptr::write_bytes(raw_ptr, pattern, size) };
 
         // 2. Read: Verify the write
         // Convert the raw pointer into a temporary, mutable byte slice (&mut [u8])
-        let slice = core::slice::from_raw_parts(raw_ptr, size);
+        let slice = unsafe { core::slice::from_raw_parts(raw_ptr, size) };
 
         // Verify every byte in the slice matches the pattern
         for (i, &byte) in slice.iter().enumerate() {

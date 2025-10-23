@@ -6,7 +6,7 @@
 //! PMP synchronization implementation.
 #![no_std]
 #[allow(unused)]
-pub const MAX_PMP_ENTRY_COUNT : u8 = 16;
+pub const MAX_PMP_ENTRY_COUNT: u8 = 16;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 use riscv::register::{
@@ -70,14 +70,12 @@ impl PmpBitmap {
 pub struct MemSlice {
     size: usize,
     pa_lo: usize,
+    pa_hi: usize,
 }
 
 impl MemSlice {
-    pub fn new(size: usize, pa_lo: usize) -> Self {
-        MemSlice {
-            size,
-            pa_lo,
-        }
+    pub fn new(size: usize, pa_lo: usize, pa_hi: usize) -> Self {
+        MemSlice { size, pa_lo, pa_hi }
     }
     #[inline]
     pub fn size(&self) -> usize {
@@ -131,14 +129,11 @@ pub fn decode_pmp_addr(pmp_addr: usize, mode: Range) -> MemSlice {
         Range::NAPOT => {
             let order = addr.trailing_ones();
             addr &= !((1 << (order + 1)) - 1);
-            MemSlice {
-                pa_lo: addr << 2,
-                size: 1 << (order + 3),
-            }
+            MemSlice::new(1 << (order + 3), addr << 2, 0)
         }
-        Range::NA4 => MemSlice::new(4, pmp_addr << 2),
-        Range::TOR => MemSlice::new(0, pmp_addr << 2),
-        Range::OFF => MemSlice::new(0, 0),
+        Range::NA4 => MemSlice::new(4, pmp_addr << 2, 0),
+        Range::TOR => MemSlice::new(0, pmp_addr << 2, 0),
+        Range::OFF => MemSlice::new(0, 0, 0),
     }
 }
 
