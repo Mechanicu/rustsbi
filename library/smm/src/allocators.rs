@@ -51,7 +51,7 @@ impl<const ORDER: usize> SecMemAllocator<ORDER> for PenglaiAllocator<ORDER> {
         self.buddy.dealloc(ptr, layout);
     }
     fn avaliable(&self) -> usize {
-        self.buddy.stats_alloc_actual()
+        self.buddy.stats_total_bytes() - self.buddy.stats_alloc_actual()
     }
     fn total(&self) -> usize {
         self.buddy.stats_total_bytes()

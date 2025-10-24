@@ -88,7 +88,7 @@ impl MemSlice {
         self.pa_lo
     }
     pub fn end(&self) -> usize {
-        self.pa_lo + self.size
+        self.pa_lo + self.size - 1
     }
 }
 
