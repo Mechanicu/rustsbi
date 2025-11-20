@@ -13,6 +13,7 @@ use pmpm::MemSlice;
 use riscv::register::{Permission, Range};
 
 pub mod allocators;
+mod test;
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum SecMemType {
@@ -76,7 +77,7 @@ where
     pub fn alloc(&mut self, size: usize) -> Result<MemSlice, ()> {
         let real_size: usize = match self.mtype {
             SecMemType::Runtime => self.slice.size(),
-            SecMemType::App => size.next_power_of_two(),
+            SecMemType::App => size.next_multiple_of(ALIGN),
             _ => 0,
         };
         match self
@@ -168,28 +169,26 @@ impl<const ORDER: usize, const ALIGN: usize> SecMemManager<ORDER, ALIGN> {
     }
     // Create new region with mem.
     pub fn extend(&mut self, params: &SecMemParams) -> bool {
-        if !check_mem_align(params.slice, ALIGN)
-            || !check_pmp_cfg(&params.pinfo)
-            // new region shouldn't overlap with any exist region
-            || self.check_mem_overlap(params.slice)
-        {
-            println!(
-                "New region failed: addr {:0x}, len {:0x}",
-                params.slice.start(),
-                params.slice.size()
-            );
-            return false;
-        }
-        println!(
-            "New region: addr {:0x}, len {:0x}",
-            params.slice.start(),
-            params.slice.size()
-        );
         match params.mtype {
-            SecMemType::App => self.app_regions.push(SecMemRegion::new(params)),
-            SecMemType::Runtime => self.rt_regions.push(SecMemRegion::new(params)),
             SecMemType::None => self.nonsec_regions.push(SecMemRegion::new(params)),
-            SecMemType::Monitor => error!("[SMM] There should only one SM region in global."),
+            SecMemType::Monitor => {
+                error!("[SMM] There should only one SM region in global.");
+                return false;
+            }
+            SecMemType::App => {
+                if self.check_mem_overlap(params.slice) {
+                    return false;
+                } else {
+                    self.app_regions.push(SecMemRegion::new(params))
+                }
+            }
+            SecMemType::Runtime => {
+                if self.check_mem_overlap(params.slice) {
+                    return false;
+                } else {
+                    self.rt_regions.push(SecMemRegion::new(params))
+                }
+            }
         }
         true
     }
@@ -198,12 +197,35 @@ impl<const ORDER: usize, const ALIGN: usize> SecMemManager<ORDER, ALIGN> {
     pub fn reclaim() {}
 
     // Alloc enough mem from manager.
-    pub fn alloc(&mut self, size: usize, mtype: SecMemType) -> MemSlice {
-        MemSlice::new(0, 0, 0)
+    pub fn alloc(&mut self, size: usize, mtype: SecMemType) -> Option<MemSlice> {
+        match mtype {
+            SecMemType::App => {
+                self.app_regions
+                    .iter_mut()
+                    .find_map(|region| match region.alloc(size) {
+                        Ok(slice) => Some(slice),
+                        Err(_) => None,
+                    })
+            }
+            SecMemType::Runtime => {
+                self.rt_regions
+                    .iter_mut()
+                    .find_map(|region| match region.alloc(size) {
+                        Ok(slice) => Some(slice),
+                        Err(_) => None,
+                    })
+            }
+            _ => {
+                error!("[SMM] Shouldn't alloc memory from this type");
+                return None;
+            }
+        }
     }
 
     // Free mem to manager.
-    pub fn free(&mut self, slice: MemSlice) {}
+    pub fn free(&mut self, slice: MemSlice, mtype: SecMemType) {
+        
+    }
 
     fn check_mem_overlap(&self, slice: MemSlice) -> bool {
         // Check if new region overlap with any sec mem.
@@ -246,166 +268,4 @@ fn check_mem_align(slice: MemSlice, align: usize) -> bool {
         return false;
     }
     true
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Define constants to match the generic constraints
-    const TEST_ORDER: usize = 32; // Common buddy system order
-    const TEST_ALIGN: usize = 4096; // Common page size for alignment (ALIGN)
-    const HEAP_SIZE: usize = (1 << 20) + TEST_ALIGN * 3; // 1 MB of test memory
-
-    // --- TEST UTILITIES ---
-    /// Creates a MemSlice by leaking a Boxed array to get a stable, static address.
-    fn create_mem_slice_test_safe() -> MemSlice {
-        let boxed_memory: Box<[u8; HEAP_SIZE]> = Box::new([0; HEAP_SIZE]);
-        let leaked_slice: &'static mut [u8] = Box::leak(boxed_memory);
-        let start_addr = leaked_slice.as_mut_ptr() as usize;
-        MemSlice::new(HEAP_SIZE, start_addr, 0)
-    }
-
-    // --- TEST SUITE FOR PenglaiAllocator (Buddy System) ---
-
-    type PenglaiRegion = SecMemRegion<TEST_ORDER, 64, PenglaiAllocator<TEST_ORDER>>;
-
-    #[test]
-    fn penglai_region_test() {
-        let param = SecMemParams {
-            pinfo: PMPInfo::new(),
-            slice: (create_mem_slice_test_safe()),
-            mtype: (SecMemType::App),
-        };
-        let mut penglai = PenglaiRegion::new(&param);
-        println!(
-            "PENGLAI: total:{:0x}, aval:{:0x}, addr:{:0x}",
-            penglai.allocator.total(),
-            penglai.allocator.avaliable(),
-            param.slice.start()
-        );
-        assert_eq!(penglai.allocator.total(), param.slice.size());
-        assert_eq!(penglai.allocator.avaliable(), param.slice.size());
-
-        let mut current_size = TEST_ALIGN;
-        while current_size <= HEAP_SIZE {
-            match penglai.alloc(current_size) {
-                Ok(slice) => {
-                    unsafe {
-                        (slice.start() as *mut u8).write_bytes(0xff, current_size);
-                    }
-                    println!(
-                        "PENGLAI: alloc:{:0x}, aval:{:0x}",
-                        slice.size(),
-                        penglai.allocator.avaliable()
-                    );
-                    penglai.free(slice);
-                    current_size += TEST_ALIGN;
-                }
-                Err(_) => {
-                    println!("Failed, OOM, current size:{}", current_size);
-                    break;
-                }
-            }
-        }
-    }
-
-    fn create_mock_param(mtype: SecMemType, index: usize) -> SecMemParams {
-        SecMemParams {
-            mtype,
-            slice: MemSlice::new(0x2000, 0x1000_0000 + index * 0x1000, 0),
-            pinfo: PMPInfo::new(),
-        }
-    }
-    const TEST_ROUNDS: usize = 2;
-    #[repr(align(4096))]
-    pub struct PageAlignedArray<const N: usize> {
-        data: [u8; N],
-    }
-
-    impl<const N: usize> PageAlignedArray<N> {
-        pub const fn new() -> Self {
-            PageAlignedArray { data: [0; N] }
-        }
-    }
-    const PENGLAI_REGION_SIZE: usize = 1 << 20 << 5;
-    const KEYSTONE_REGION_SIZE: usize = 1 << 20 << 4;
-    static mut PENGLAI_REGION: PageAlignedArray<PENGLAI_REGION_SIZE> = PageAlignedArray::new();
-    static mut KEYSTONE_REGION: PageAlignedArray<KEYSTONE_REGION_SIZE> = PageAlignedArray::new();
-    #[test]
-    #[allow(static_mut_refs)]
-    pub fn stress_test_sec_mem_manager() {
-        for round in 0..TEST_ROUNDS {
-            let sm_param = create_mock_param(SecMemType::Monitor, 0);
-            let app_valid_param = SecMemParams {
-                pinfo: PMPInfo::new(),
-                slice: MemSlice::new(
-                    PENGLAI_REGION_SIZE,
-                    unsafe { PENGLAI_REGION.data.as_ptr() as usize },
-                    0,
-                ),
-                mtype: SecMemType::App,
-            };
-            let rt_valid_param = SecMemParams {
-                pinfo: PMPInfo::new(),
-                slice: MemSlice::new(
-                    KEYSTONE_REGION_SIZE,
-                    unsafe { KEYSTONE_REGION.data.as_ptr() as usize },
-                    0,
-                ),
-                mtype: SecMemType::Runtime,
-            };
-            let rt_invalid_param = SecMemParams {
-                pinfo: PMPInfo::new(),
-                slice: MemSlice::new(
-                    KEYSTONE_REGION_SIZE + KEYSTONE_REGION_SIZE / 2,
-                    unsafe { KEYSTONE_REGION.data.as_ptr() as usize + KEYSTONE_REGION_SIZE / 2 },
-                    0,
-                ),
-                mtype: SecMemType::Runtime,
-            };
-            let app_invalid_param = SecMemParams {
-                pinfo: PMPInfo::new(),
-                slice: MemSlice::new(
-                    PENGLAI_REGION_SIZE / 2,
-                    unsafe { PENGLAI_REGION.data.as_ptr() as usize },
-                    0,
-                ),
-                mtype: SecMemType::Runtime,
-            };
-            // init and extend regions
-            let mut manager = SecMemManager::<TEST_ORDER, TEST_ALIGN>::new(&sm_param);
-            let mut initial_params = (1..=10)
-                .map(|i| create_mock_param(SecMemType::None, i))
-                .collect::<Vec<_>>();
-            initial_params.push(app_valid_param);
-            initial_params.push(rt_valid_param);
-            initial_params.push(app_invalid_param);
-            initial_params.push(rt_invalid_param);
-            for param in initial_params.iter() {
-                manager.extend(param);
-            }
-
-            // delete and retrive slices test
-            let released_slices = manager.delete();
-            assert!(
-                (manager.app_regions.len() == 0)
-                    || (manager.rt_regions.len() == 0)
-                    || (manager.nonsec_regions.len() == 0),
-                "regions was not cleared by delete.",
-            );
-            for slice in released_slices.iter() {
-                println!(
-                    "Retrive slice: addr:{:0x}, size:{:0x}",
-                    slice.start(),
-                    slice.size()
-                );
-            }
-            assert!(
-                released_slices.len() > 0,
-                "Round {} delete returned no slices.",
-                round
-            );
-        }
-    }
 }
