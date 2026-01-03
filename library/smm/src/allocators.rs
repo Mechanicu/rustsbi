@@ -2,46 +2,35 @@ use super::SecMemAllocator;
 use buddy_system_allocator::Heap;
 use core::alloc::Layout;
 use core::ptr::NonNull;
-use pmpm::MemSlice;
 
-pub struct DefaultAllocator<const ORDER: usize> {}
-
-pub struct PenglaiAllocator<const ORDER: usize> {
+pub struct AppAlloc<const ORDER: usize> {
     buddy: Heap<ORDER>,
 }
-pub struct KeystoneAllocator<const ORDER: usize> {
-    area: (MemSlice, bool),
+pub struct RTAlloc<const ORDER: usize> {
+    addr: usize,
+    len: usize,
+    total: usize,
 }
 
-/// Default allocator, for read only sec mem (like SM code/data).
-impl<const ORDER: usize> SecMemAllocator<ORDER> for DefaultAllocator<ORDER> {
+pub struct NoneAlloc<const ORDER: usize> {}
+
+impl<const ORDER: usize> SecMemAllocator<ORDER> for NoneAlloc<ORDER> {
     fn new() -> Self {
         Self {}
-    }
-    fn alloc(&mut self, layout: Layout) -> Result<NonNull<u8>, ()> {
-        Err(())
-    }
-    fn free(&mut self, ptr: NonNull<u8>, layout: Layout) {}
-    fn init(&mut self, slice: MemSlice) {}
-    fn avaliable(&self) -> usize {
-        0
-    }
-    fn total(&self) -> usize {
-        0
     }
 }
 
 /// Memory allocation style of Penglai. Penglai supports enclaves sharing a
 /// secure memory region, which is allocated using the buddy algorithm.
-impl<const ORDER: usize> SecMemAllocator<ORDER> for PenglaiAllocator<ORDER> {
+impl<const ORDER: usize> SecMemAllocator<ORDER> for AppAlloc<ORDER> {
     fn new() -> Self {
         Self {
             buddy: Heap::<ORDER>::new(),
         }
     }
-    fn init(&mut self, slice: MemSlice) {
+    fn init(&mut self, addr: usize, len: usize) {
         unsafe {
-            self.buddy.init(slice.start(), slice.size());
+            self.buddy.init(addr as usize, len as usize);
         }
     }
     fn alloc(&mut self, layout: Layout) -> Result<NonNull<u8>, ()> {
@@ -50,7 +39,7 @@ impl<const ORDER: usize> SecMemAllocator<ORDER> for PenglaiAllocator<ORDER> {
     fn free(&mut self, ptr: NonNull<u8>, layout: Layout) {
         self.buddy.dealloc(ptr, layout);
     }
-    fn avaliable(&self) -> usize {
+    fn available(&self) -> usize {
         self.buddy.stats_total_bytes() - self.buddy.stats_alloc_actual()
     }
     fn total(&self) -> usize {
@@ -61,38 +50,36 @@ impl<const ORDER: usize> SecMemAllocator<ORDER> for PenglaiAllocator<ORDER> {
 /// Memory allocation style of Keystone. Enclaves in Keystone exclusively occupy
 /// the entire region, thus the region is merely marked and no further allocation
 /// is performed within it.
-impl<const ORDER: usize> SecMemAllocator<ORDER> for KeystoneAllocator<ORDER> {
+impl<const ORDER: usize> SecMemAllocator<ORDER> for RTAlloc<ORDER> {
     fn new() -> Self {
         Self {
-            area: (MemSlice::new(0, 0, 0), false),
+            addr: 0,
+            len: 0,
+            total: 0,
         }
     }
-    fn init(&mut self, slice: MemSlice) {
-        self.area = (slice, true);
+    fn init(&mut self, addr: usize, len: usize) {
+        self.addr = addr;
+        self.len = len;
+        self.total = len;
     }
     fn alloc(&mut self, layout: Layout) -> Result<NonNull<u8>, ()> {
-        if (self.area.1 == false) || (self.area.0.size() < layout.size()) {
+        if (self.len as usize) < layout.size() {
             return Err(());
         }
-
-        self.area.1 = false;
-        Ok(NonNull::new(self.area.0.start() as *mut u8).ok_or(())?)
+        self.len = 0;
+        Ok(NonNull::new(self.addr as *mut u8).ok_or(())?)
     }
     fn free(&mut self, ptr: NonNull<u8>, layout: Layout) {
-        if (self.area.1 == true) || (ptr.as_ptr() as usize != self.area.0.start()) {
-            panic!("Deallocating foreign or incorrect pointer");
+        if ptr.as_ptr() as usize != self.addr {
+            panic!("[RTAlloc] Deallocating foreign or incorrect pointer");
         }
-        self.area.1 = true;
+        self.len = layout.size() as usize;
     }
-    fn avaliable(&self) -> usize {
-        if self.area.1 == true {
-            self.area.0.size()
-        } else {
-            0
-        }
+    fn available(&self) -> usize {
+        self.len as usize
     }
     fn total(&self) -> usize {
-        self.area.0.size()
+        self.total as usize
     }
 }
-
