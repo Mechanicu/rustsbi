@@ -30,7 +30,7 @@ impl PMPSlotAllocator {
     }
 
     /// Alloc first free PMP slot in bitmap and update bitmap.
-    pub fn alloc(&mut self) -> Result<u8, PmpError> {
+    pub fn alloc(&mut self) -> Result<u32, PmpError> {
         loop {
             let cur_slots = self.pmp_slots.load(Ordering::Acquire);
             // check avaliable slot
@@ -40,7 +40,7 @@ impl PMPSlotAllocator {
             }
 
             // alloc bit
-            let pmp_idx = aval_slots.trailing_zeros() as u8;
+            let pmp_idx = aval_slots.trailing_zeros();
             let new_bitmap = cur_slots | (1u64 << pmp_idx);
             // set new alloc bit
             match self.pmp_slots.compare_exchange(
@@ -182,26 +182,38 @@ mod tests {
     }
 
     // --- Test: is_alloc Check ---
+    const TEST_BIT1: u32 = MAX_PMP_ENTRY_COUNT - 1;
+    const TEST_BIT2: u32 = MAX_PMP_ENTRY_COUNT - 2;
+    const TEST_BIT3: u32 = MAX_PMP_ENTRY_COUNT - 3;
     #[test]
     fn test_is_alloc() {
-        // Mask: PMP indices 20, 21, 22 are available
-        let alloc_mask = create_mask(&[20, 21, 22]);
+        let alloc_mask = create_mask(&[TEST_BIT1 as u8, TEST_BIT2 as u8, TEST_BIT3 as u8]);
         let mut allocator = PMPSlotAllocator::new(alloc_mask);
 
         // 1. In range, but free
-        assert_eq!(allocator.is_alloc(20), Ok(false));
+        assert_eq!(allocator.is_alloc(TEST_BIT1), Ok(false));
 
         // 2. Out of range
-        assert_eq!(allocator.is_alloc(19), Err(PmpError::IndexOutOfRange));
-        assert_eq!(allocator.is_alloc(23), Err(PmpError::IndexOutOfRange));
-        assert_eq!(allocator.is_alloc(64), Err(PmpError::IndexOutOfRange));
+        assert_eq!(
+            allocator.is_alloc(TEST_BIT1 + 1),
+            Err(PmpError::IndexOutOfRange)
+        );
+        assert_eq!(
+            allocator.is_alloc(TEST_BIT3 - 1),
+            Err(PmpError::IndexOutOfRange)
+        );
+        assert_eq!(
+            allocator.is_alloc(MAX_PMP_ENTRY_COUNT),
+            Err(PmpError::IndexOutOfRange)
+        );
 
-        // 3. Allocate 21
+        // 3. Allocate
+        allocator.alloc().unwrap();
         allocator.alloc().unwrap();
 
         // 4. In range, and allocated
-        assert_eq!(allocator.is_alloc(22), Ok(false));
-        assert_eq!(allocator.is_alloc(21), Ok(false));
-        assert_eq!(allocator.is_alloc(20), Ok(true)); // Still free
+        assert_eq!(allocator.is_alloc(TEST_BIT3), Ok(true));
+        assert_eq!(allocator.is_alloc(TEST_BIT2), Ok(true));
+        assert_eq!(allocator.is_alloc(TEST_BIT1), Ok(false)); // Still free
     }
 }

@@ -6,7 +6,7 @@
 //! PMP synchronization implementation.
 #![no_std]
 #[allow(unused)]
-pub const MAX_PMP_ENTRY_COUNT: u32 = 64;
+pub const MAX_PMP_ENTRY_COUNT: u32 = 16;
 pub const PMP_SHIFT: u32 = 2;
 
 use core::usize;
@@ -45,9 +45,11 @@ impl PmpSlice {
             pa_hi,
         }
     }
-    #[inline]
     pub fn log2len(&self) -> u32 {
         self.log2len
+    }
+    pub fn len(&self) -> usize {
+        1usize << self.log2len
     }
     pub fn lo(&self) -> usize {
         self.pa_lo
@@ -61,14 +63,16 @@ impl PmpSlice {
 }
 
 #[inline]
-fn check_pmp_area_avaliable(slice: &PmpSlice) -> bool {
-    let log2len = slice.log2len;
-    let addr = slice.pa_lo;
-    // len must be power of 2 and no less than 4, addr must be aligned to len
-    if log2len < PMP_SHIFT || (addr.trailing_zeros() < log2len) {
+pub fn check_pmp_area_available(addr: usize, len: usize, range: Range) -> bool {
+    if addr & 0x3 != 0 || len < 4 {
         return false;
     }
-    true
+    match range {
+        Range::NA4 => len == 4,
+        Range::NAPOT => len >= 8 && (len & (len - 1) == 0) && (addr % len == 0),
+        Range::TOR => len % 4 == 0,
+        _ => true,
+    }
 }
 
 // TODO: Under 32-bit architecture, both length and address may overflow and need to be fixed
@@ -78,16 +82,12 @@ pub fn encode_pmp_addr(slice: &PmpSlice, range: Range) -> Option<usize> {
     let log2len = slice.log2len & (usize::BITS | (usize::BITS - 1));
     match range {
         Range::NAPOT => {
-            if check_pmp_area_avaliable(slice) {
-                if log2len == usize::BITS {
-                    Some(usize::MAX)
-                } else {
-                    let addrmask = (1usize << (log2len - PMP_SHIFT)) - 1;
-                    addr = (addr >> PMP_SHIFT) & !addrmask;
-                    Some(addr | (addrmask >> 1))
-                }
+            if log2len == usize::BITS {
+                Some(usize::MAX)
             } else {
-                None
+                let addrmask = (1usize << (log2len - PMP_SHIFT)) - 1;
+                addr = (addr >> PMP_SHIFT) & !addrmask;
+                Some(addr | (addrmask >> 1))
             }
         }
         Range::NA4 => Some(addr >> PMP_SHIFT),
@@ -117,24 +117,25 @@ pub fn decode_pmp_addr(pmpaddr: usize, range: Range) -> PmpSlice {
     }
 }
 
-#[allow(unused)]
 #[inline]
 /// Get PMP entry @idx on local hart.
-pub fn get_pmp_entry(idx: u32) -> (PmpSlice, PmpConfig) {
+pub fn get_pmp_entry(idx: u32) -> (usize, usize, PmpConfig) {
     let (pmp_addr, pmp_config) = get_pmp_reg(idx);
+    let slice = decode_pmp_addr(pmp_addr, pmp_config.range);
     (
-        decode_pmp_addr(pmp_addr, pmp_config.range),
+        slice.start(),
+        slice.len(),
         PmpConfig::new(pmp_config.range, pmp_config.permission),
     )
 }
 
-#[allow(unused)]
 #[inline]
 /// Set PMP entry @idx on local hart.
-pub fn set_pmp_entry(idx: u32, slice: PmpSlice, config: PmpConfig) {
-    if let Some(pmp_addr) = encode_pmp_addr(&slice, config.range) {
-        set_pmp_reg(idx, pmp_addr, config.range, config.perm)
-    }
+pub fn set_pmp_entry(idx: u32, addr: usize, len: usize, config: PmpConfig) -> bool {
+    let slice = PmpSlice::new(len.ilog2(), addr, 0);
+    let pmp_addr = encode_pmp_addr(&slice, config.range).unwrap();
+    set_pmp_reg(idx, pmp_addr, config.range, config.perm);
+    return true;
 }
 
 fn set_pmp_reg(idx: u32, pmp_addr: usize, range: Range, perm: Permission) {
