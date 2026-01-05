@@ -18,12 +18,7 @@ use riscv::register::{
 };
 pub mod bitmap;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PmpSlice {
-    pa_lo: usize,
-    pa_hi: usize,
-    log2len: u32,
-}
+
 
 #[derive(Debug, Clone, Copy)]
 pub struct PmpConfig {
@@ -35,6 +30,19 @@ impl PmpConfig {
     pub fn new(range: Range, perm: Permission) -> Self {
         Self { range, perm }
     }
+    pub fn range(&self) -> Range {
+        self.range
+    }
+    pub fn perm(&self) -> Permission {
+        self.perm
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PmpSlice {
+    pa_lo: usize,
+    pa_hi: usize,
+    log2len: u32,
 }
 
 impl PmpSlice {
@@ -63,6 +71,8 @@ impl PmpSlice {
 }
 
 #[inline]
+/// Memory region check was expect to execute before set PMP regs, to simplify PMP ops, PMPM
+/// request user check memory manual
 pub fn check_pmp_area_available(addr: usize, len: usize, range: Range) -> bool {
     if addr & 0x3 != 0 || len < 4 {
         return false;
