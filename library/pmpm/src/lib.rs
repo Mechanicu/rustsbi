@@ -18,23 +18,20 @@ use riscv::register::{
 };
 pub mod bitmap;
 
-
-
 #[derive(Debug, Clone, Copy)]
 pub struct PmpConfig {
     range: Range,
     perm: Permission,
+    is_locked: bool,
 }
 
 impl PmpConfig {
-    pub fn new(range: Range, perm: Permission) -> Self {
-        Self { range, perm }
-    }
-    pub fn range(&self) -> Range {
-        self.range
-    }
-    pub fn perm(&self) -> Permission {
-        self.perm
+    pub fn new(range: Range, perm: Permission, is_locked: bool) -> Self {
+        Self {
+            range,
+            perm,
+            is_locked,
+        }
     }
 }
 
@@ -87,22 +84,22 @@ pub fn check_pmp_area_available(addr: usize, len: usize, range: Range) -> bool {
 
 // TODO: Under 32-bit architecture, both length and address may overflow and need to be fixed
 // Encode addr to PMP addr.
-pub fn encode_pmp_addr(slice: &PmpSlice, range: Range) -> Option<usize> {
+pub fn encode_pmp_addr(slice: &PmpSlice, range: Range) -> usize {
     let mut addr = slice.pa_lo;
     let log2len = slice.log2len & (usize::BITS | (usize::BITS - 1));
     match range {
         Range::NAPOT => {
             if log2len == usize::BITS {
-                Some(usize::MAX)
+                usize::MAX
             } else {
                 let addrmask = (1usize << (log2len - PMP_SHIFT)) - 1;
                 addr = (addr >> PMP_SHIFT) & !addrmask;
-                Some(addr | (addrmask >> 1))
+                addr | (addrmask >> 1)
             }
         }
-        Range::NA4 => Some(addr >> PMP_SHIFT),
-        Range::TOR => Some(addr >> PMP_SHIFT),
-        Range::OFF => Some(0),
+        Range::NA4 => addr >> PMP_SHIFT,
+        Range::TOR => addr >> PMP_SHIFT,
+        Range::OFF => 0,
     }
 }
 
@@ -127,117 +124,96 @@ pub fn decode_pmp_addr(pmpaddr: usize, range: Range) -> PmpSlice {
     }
 }
 
-#[inline]
-/// Get PMP entry @idx on local hart.
-pub fn get_pmp_entry(idx: u32) -> (usize, usize, PmpConfig) {
-    let (pmp_addr, pmp_config) = get_pmp_reg(idx);
-    let slice = decode_pmp_addr(pmp_addr, pmp_config.range);
-    (
-        slice.start(),
-        slice.len(),
-        PmpConfig::new(pmp_config.range, pmp_config.permission),
-    )
-}
-
-#[inline]
-/// Set PMP entry @idx on local hart.
-pub fn set_pmp_entry(idx: u32, addr: usize, len: usize, config: PmpConfig) -> bool {
-    let slice = PmpSlice::new(len.ilog2(), addr, 0);
-    let pmp_addr = encode_pmp_addr(&slice, config.range).unwrap();
-    set_pmp_reg(idx, pmp_addr, config.range, config.perm);
-    return true;
-}
-
-fn set_pmp_reg(idx: u32, pmp_addr: usize, range: Range, perm: Permission) {
+pub fn set_pmp_cfg(idx: u32, config: &PmpConfig) {
+    let cfg_idx = (idx % 8) as usize;
     unsafe {
         match idx {
-            0 => {
-                pmpaddr0::write(pmp_addr);
-                pmpcfg0::set_pmp(0, range, perm, false);
-            }
-            1 => {
-                pmpaddr1::write(pmp_addr);
-                pmpcfg0::set_pmp(1, range, perm, false);
-            }
-            2 => {
-                pmpaddr2::write(pmp_addr);
-                pmpcfg0::set_pmp(2, range, perm, false);
-            }
-            3 => {
-                pmpaddr3::write(pmp_addr);
-                pmpcfg0::set_pmp(3, range, perm, false);
-            }
-            4 => {
-                pmpaddr4::write(pmp_addr);
-                pmpcfg0::set_pmp(4, range, perm, false);
-            }
-            5 => {
-                pmpaddr5::write(pmp_addr);
-                pmpcfg0::set_pmp(5, range, perm, false);
-            }
-            6 => {
-                pmpaddr6::write(pmp_addr);
-                pmpcfg0::set_pmp(6, range, perm, false);
-            }
-            7 => {
-                pmpaddr7::write(pmp_addr);
-                pmpcfg0::set_pmp(7, range, perm, false);
-            }
-            8 => {
-                pmpaddr8::write(pmp_addr);
-                pmpcfg2::set_pmp(0, range, perm, false);
-            }
-            9 => {
-                pmpaddr9::write(pmp_addr);
-                pmpcfg2::set_pmp(1, range, perm, false);
-            }
-            10 => {
-                pmpaddr10::write(pmp_addr);
-                pmpcfg2::set_pmp(2, range, perm, false);
-            }
-            11 => {
-                pmpaddr11::write(pmp_addr);
-                pmpcfg2::set_pmp(3, range, perm, false);
-            }
-            12 => {
-                pmpaddr12::write(pmp_addr);
-                pmpcfg2::set_pmp(4, range, perm, false);
-            }
-            13 => {
-                pmpaddr13::write(pmp_addr);
-                pmpcfg2::set_pmp(5, range, perm, false);
-            }
-            14 => {
-                pmpaddr14::write(pmp_addr);
-                pmpcfg2::set_pmp(6, range, perm, false);
-            }
-            _ => {
-                pmpaddr15::write(pmp_addr);
-                pmpcfg2::set_pmp(7, range, perm, false);
-            }
+            0..=7 => pmpcfg0::set_pmp(cfg_idx, config.range, config.perm, config.is_locked),
+            8..=15 => pmpcfg2::set_pmp(cfg_idx, config.range, config.perm, config.is_locked),
+            _ => panic!("Invalid PMP index for cfg"),
         }
     }
 }
 
-fn get_pmp_reg(idx: u32) -> (usize, Pmp) {
+fn _set_pmp_addr(idx: u32, addr: usize) {
     match idx {
-        0 => (pmpaddr0::read(), pmpcfg0::read().into_config(0)),
-        1 => (pmpaddr1::read(), pmpcfg0::read().into_config(1)),
-        2 => (pmpaddr2::read(), pmpcfg0::read().into_config(2)),
-        3 => (pmpaddr3::read(), pmpcfg0::read().into_config(3)),
-        4 => (pmpaddr4::read(), pmpcfg0::read().into_config(4)),
-        5 => (pmpaddr5::read(), pmpcfg0::read().into_config(5)),
-        6 => (pmpaddr6::read(), pmpcfg0::read().into_config(6)),
-        7 => (pmpaddr7::read(), pmpcfg0::read().into_config(7)),
-        8 => (pmpaddr8::read(), pmpcfg2::read().into_config(0)),
-        9 => (pmpaddr9::read(), pmpcfg2::read().into_config(1)),
-        10 => (pmpaddr10::read(), pmpcfg2::read().into_config(2)),
-        11 => (pmpaddr11::read(), pmpcfg2::read().into_config(3)),
-        12 => (pmpaddr12::read(), pmpcfg2::read().into_config(4)),
-        13 => (pmpaddr13::read(), pmpcfg2::read().into_config(5)),
-        14 => (pmpaddr14::read(), pmpcfg2::read().into_config(6)),
-        _ => (pmpaddr15::read(), pmpcfg2::read().into_config(7)),
+        0 => pmpaddr0::write(addr),
+        1 => pmpaddr1::write(addr),
+        2 => pmpaddr2::write(addr),
+        3 => pmpaddr3::write(addr),
+        4 => pmpaddr4::write(addr),
+        5 => pmpaddr5::write(addr),
+        6 => pmpaddr6::write(addr),
+        7 => pmpaddr7::write(addr),
+        8 => pmpaddr8::write(addr),
+        9 => pmpaddr9::write(addr),
+        10 => pmpaddr10::write(addr),
+        11 => pmpaddr11::write(addr),
+        12 => pmpaddr12::write(addr),
+        13 => pmpaddr13::write(addr),
+        14 => pmpaddr14::write(addr),
+        15 => pmpaddr15::write(addr),
+        _ => panic!("Invalid PMP index for addr"),
     }
+}
+
+pub fn set_pmp_entry(idx: u32, addr: usize, len: usize, config: &PmpConfig) -> bool {
+    if !check_pmp_area_available(addr, len, config.range) {
+        return false;
+    }
+    let slice = PmpSlice::new(len.ilog2(), addr, 0);
+    _set_pmp_addr(idx, encode_pmp_addr(&slice, config.range));
+    set_pmp_cfg(idx, config);
+    true
+}
+
+pub fn set_pmp_addr(idx: u32, addr: usize, len: usize, range: Range) -> bool {
+    if !check_pmp_area_available(addr, len, range) {
+        return false;
+    }
+    let slice = PmpSlice::new(len.ilog2(), addr, 0);
+    _set_pmp_addr(idx, encode_pmp_addr(&slice, range));
+    true
+}
+
+fn _get_pmp_addr(idx: u32) -> usize {
+    match idx {
+        0 => pmpaddr0::read(),
+        1 => pmpaddr1::read(),
+        2 => pmpaddr2::read(),
+        3 => pmpaddr3::read(),
+        4 => pmpaddr4::read(),
+        5 => pmpaddr5::read(),
+        6 => pmpaddr6::read(),
+        7 => pmpaddr7::read(),
+        8 => pmpaddr8::read(),
+        9 => pmpaddr9::read(),
+        10 => pmpaddr10::read(),
+        11 => pmpaddr11::read(),
+        12 => pmpaddr12::read(),
+        13 => pmpaddr13::read(),
+        14 => pmpaddr14::read(),
+        15 => pmpaddr15::read(),
+        _ => panic!("Invalid PMP index"),
+    }
+}
+
+pub fn get_pmp_cfg(idx: u32) -> PmpConfig {
+    let cfg_idx = (idx % 8) as usize;
+    let pmp_config = match idx {
+        0..=7 => pmpcfg0::read().into_config(cfg_idx),
+        8..=15 => pmpcfg2::read().into_config(cfg_idx),
+        _ => panic!("Invalid PMP index"),
+    };
+    PmpConfig {
+        range: (pmp_config.range),
+        perm: (pmp_config.permission),
+        is_locked: (pmp_config.locked),
+    }
+}
+
+pub fn get_pmp_entry(idx: u32) -> (usize, PmpConfig) {
+    (_get_pmp_addr(idx), get_pmp_cfg(idx))
 }
 
 #[cfg(test)]

@@ -16,16 +16,20 @@ pub enum PmpError {
 #[derive(Debug)]
 pub struct PMPSlotAllocator {
     pmp_slots: AtomicU64,
+    /// PMP slots that can be used.
     alloc_mask: u64,
+    /// PMP slots that current allocator managed, including reserved ones.
+    manage_mask: u64,
 }
 
 impl PMPSlotAllocator {
     /// Create new PMP bitmap.
-    pub const fn new(alloc_mask: u64) -> Self {
+    pub const fn new(alloc_mask: u64, manage_mask: u64) -> Self {
         PMPSlotAllocator {
             // use alloc mask to init PMP bitmap
             pmp_slots: AtomicU64::new(0),
             alloc_mask,
+            manage_mask,
         }
     }
 
@@ -86,6 +90,10 @@ impl PMPSlotAllocator {
         let cur_slots = self.pmp_slots.load(Ordering::Acquire);
         Ok((cur_slots & check_slot) != 0)
     }
+
+    pub fn is_managed(&self, idx: u32) -> bool {
+        self.manage_mask & (1 << idx) != 0
+    }
 }
 
 #[cfg(test)]
@@ -108,7 +116,7 @@ mod tests {
         // Mask: only PMP indices 0, 1, 8, 9 are available
         let mask_indices = [0, 1, 8, 9];
         let alloc_mask = create_mask(&mask_indices);
-        let mut allocator = PMPSlotAllocator::new(alloc_mask);
+        let mut allocator = PMPSlotAllocator::new(alloc_mask, alloc_mask);
 
         // Check initial state (should be 0)
         assert_eq!(allocator.pmp_slots.load(Ordering::Relaxed), 0);
@@ -139,7 +147,7 @@ mod tests {
     fn test_no_free_slot_and_limit() {
         // Mask: only PMP index 15 is available
         let alloc_mask = 1u64 << 15;
-        let mut allocator = PMPSlotAllocator::new(alloc_mask);
+        let mut allocator = PMPSlotAllocator::new(alloc_mask, alloc_mask);
 
         // 1. Allocate the only slot
         let idx = allocator.alloc().unwrap();
@@ -160,7 +168,7 @@ mod tests {
     fn test_free_errors() {
         // Mask: PMP indices 4, 5, 6 are available
         let alloc_mask = create_mask(&[4, 5, 6]);
-        let mut allocator = PMPSlotAllocator::new(alloc_mask);
+        let mut allocator = PMPSlotAllocator::new(alloc_mask, alloc_mask);
 
         // Allocate slot 4
         allocator.alloc().unwrap();
@@ -188,7 +196,7 @@ mod tests {
     #[test]
     fn test_is_alloc() {
         let alloc_mask = create_mask(&[TEST_BIT1 as u8, TEST_BIT2 as u8, TEST_BIT3 as u8]);
-        let mut allocator = PMPSlotAllocator::new(alloc_mask);
+        let mut allocator = PMPSlotAllocator::new(alloc_mask, alloc_mask);
 
         // 1. In range, but free
         assert_eq!(allocator.is_alloc(TEST_BIT1), Ok(false));
