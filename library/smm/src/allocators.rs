@@ -83,3 +83,89 @@ impl<const ORDER: usize> SecMemAllocator<ORDER> for RTAlloc<ORDER> {
         self.total as usize
     }
 }
+
+#[allow(static_mut_refs)]
+#[cfg(test)]
+mod stress_tests {
+    use super::*;
+    use alloc::vec::Vec;
+    use core::alloc::Layout;
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    const TEST_EXPONENT: usize = 28;
+    const TEST_MEM_SIZE: usize = 1 << TEST_EXPONENT; // 256MB
+    #[repr(C, align(4096))]
+    struct TestMemory([u8; TEST_MEM_SIZE]);
+    static mut FAKE_HARDWARE_MEM: TestMemory = TestMemory([0; TEST_MEM_SIZE]);
+    #[test]
+    fn stress_test_app_alloc_power_of_two_silent() {
+        const MEM_SIZE: usize = TEST_MEM_SIZE;
+        let raw_mem = unsafe { FAKE_HARDWARE_MEM.0.as_mut_ptr() };
+
+        let mut allocator = AppAlloc::<TEST_EXPONENT>::new();
+        allocator.init(raw_mem as usize, MEM_SIZE);
+
+        let initial_available = allocator.available();
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut allocations = Vec::with_capacity(128);
+        let mut size_hit_map = [0u32; 26];
+
+        for _ in 0..5000 {
+            if !allocations.is_empty() && (rng.gen_bool(0.3) || allocations.len() > 30) {
+                let index = rng.gen_range(0..allocations.len());
+                let (ptr, layout) = allocations.remove(index);
+                allocator.free(ptr, layout);
+            } else {
+                let exponent = rng.gen_range(12..26);
+                let size = 1 << exponent;
+                let layout = Layout::from_size_align(size, size).unwrap();
+
+                if let Ok(ptr) = allocator.alloc(layout) {
+                    size_hit_map[exponent as usize] += 1;
+                    allocations.push((ptr, layout));
+                }
+            }
+        }
+
+        for (ptr, layout) in allocations {
+            allocator.free(ptr, layout);
+        }
+
+        for exp in 12..26 {
+            assert!(
+                size_hit_map[exp] > 0,
+                "Size 2^{} was never successfully allocated",
+                exp
+            );
+        }
+
+        assert_eq!(allocator.available(), initial_available);
+    }
+    #[test]
+    fn stress_test_rt_alloc_silent() {
+        const RT_MEM_SIZE: usize = TEST_MEM_SIZE;
+        let mut allocator = RTAlloc::<TEST_EXPONENT>::new();
+
+        for i in 0..1000 {
+            let base_addr: usize = unsafe { FAKE_HARDWARE_MEM.0.as_ptr() as usize };
+            allocator.init(base_addr, RT_MEM_SIZE);
+
+            let exponent = (i % (TEST_EXPONENT - 12)) + 12;
+            let layout = Layout::from_size_align(1 << exponent, 8).unwrap();
+
+            let ptr = allocator.alloc(layout).unwrap();
+            assert_eq!(ptr.as_ptr() as usize, base_addr);
+            assert_eq!(allocator.available(), 0);
+
+            assert!(
+                allocator
+                    .alloc(Layout::from_size_align(1, 1).unwrap())
+                    .is_err()
+            );
+
+            allocator.free(ptr, layout);
+            assert_eq!(allocator.available(), layout.size());
+        }
+    }
+}

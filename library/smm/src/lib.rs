@@ -133,32 +133,26 @@ where
     /// Free enclave mem back to origin region
     fn free_em(&mut self, addr: usize, len: usize, region_id: usize) -> Option<bool>;
     /// Grant enclave access to certain region
-    fn grant_enclave_access(&self, region_id: usize) -> bool;
+    fn grant_access(&self, region_id: usize) -> bool;
     /// Retrive enclave access to certain region
-    fn retrive_enclave_access(&self, region_id: usize) -> bool;
+    fn retrive_access(&self, region_id: usize) -> bool;
 }
 
 pub trait SecMemProtector {
-    /// Create new mem protector
-    fn new() -> Self;
     /// Alloc a hardware for current region
-    fn alloc(&mut self) -> u32;
+    fn alloc(&mut self) -> Option<u32>;
     /// Free a hardware
-    fn free(&mut self, hwid: u32);
-    /// Protect mem area
-    fn grant_access(&self, addr: usize, len: usize, hwid: u32);
-    /// Unprotect mem area
-    fn retrive_access(&self, addr: usize, len: usize, hwid: u32);
-    /// Clean hardware
-    fn clean(hwid: u32) -> bool;
-}
-
-/// Helper functions.
-/// Check PMP cfg validation
-fn check_pmp_cfg(slot: u32) -> bool {
-    if slot as u32 >= MAX_PMP_ENTRY_COUNT {
-        error!("Check params failed, slot:{}", slot);
-        return false;
-    }
-    true
+    fn free(&mut self, hwid: u32) -> bool;
+    /// Grant access to secure mem on current hart
+    fn grant_access(&self, addr: usize, len: usize, hwid: u32) -> bool;
+    /// Retrive access to secure mem on current hart
+    fn retrive_access(&self, addr: usize, len: usize, hwid: u32) -> bool;
+    /// Grant access to secure mem on all hart
+    fn grant_access_all(&self, addr: usize, len: usize, hwid: u32) -> bool;
+    /// Retrive access to secure mem on all hart
+    fn retrive_access_all(&self, addr: usize, len: usize, hwid: u32) -> bool;
+    /// Disable hardware
+    fn disable(&self, hwid: u32) -> bool;
+    // Enable hardware
+    fn enable(&self, hwid: u32) -> bool;
 }
