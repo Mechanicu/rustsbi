@@ -1,6 +1,9 @@
 use super::SecMemProtector;
 use core::usize;
-use pmpm::{PmpConfig, bitmap::PMPSlotAllocator, set_pmp_entry};
+use pmpm::{
+    PmpConfig, bitmap::PMPSlotAllocator, check_pmp_area_available, set_pmp_entry,
+    set_pmp_entry_sync,
+};
 use riscv::register::{Permission, Range};
 
 pub struct TestSecMemProtector {
@@ -8,7 +11,7 @@ pub struct TestSecMemProtector {
 }
 
 impl TestSecMemProtector {
-    fn new(alloc_mask: u64, manage_mask: u64) -> Self {
+    pub fn new(alloc_mask: u64, manage_mask: u64) -> Self {
         Self {
             hw_manager: (PMPSlotAllocator::new(alloc_mask, manage_mask)),
         }
@@ -16,6 +19,9 @@ impl TestSecMemProtector {
 }
 
 impl SecMemProtector for TestSecMemProtector {
+    fn is_protectable(&self, addr: usize, len: usize) -> bool {
+        check_pmp_area_available(addr, len, Range::NAPOT)
+    }
     fn alloc(&mut self) -> Option<u32> {
         match self.hw_manager.alloc() {
             Ok(slot) => Some(slot),
@@ -29,21 +35,35 @@ impl SecMemProtector for TestSecMemProtector {
         }
     }
     fn disable(&self, hwid: u32) -> bool {
+        let _ = hwid;
         true
     }
     fn enable(&self, hwid: u32) -> bool {
+        let _ = hwid;
         true
     }
     fn grant_access(&self, addr: usize, len: usize, hwid: u32) -> bool {
+        let _ = hwid;
+        let _ = addr;
+        let _ = len;
         true
     }
     fn grant_access_all(&self, addr: usize, len: usize, hwid: u32) -> bool {
+        let _ = hwid;
+        let _ = addr;
+        let _ = len;
         true
     }
     fn retrive_access(&self, addr: usize, len: usize, hwid: u32) -> bool {
+        let _ = hwid;
+        let _ = addr;
+        let _ = len;
         true
     }
     fn retrive_access_all(&self, addr: usize, len: usize, hwid: u32) -> bool {
+        let _ = hwid;
+        let _ = addr;
+        let _ = len;
         true
     }
 }
@@ -51,6 +71,9 @@ impl SecMemProtector for TestSecMemProtector {
 pub type SecMemProtectorByPMP = PMPSlotAllocator;
 
 impl SecMemProtector for SecMemProtectorByPMP {
+    fn is_protectable(&self, addr: usize, len: usize) -> bool {
+        check_pmp_area_available(addr, len, Range::NAPOT)
+    }
     fn alloc(&mut self) -> Option<u32> {
         match self.alloc() {
             Ok(slot) => Some(slot),
@@ -65,7 +88,7 @@ impl SecMemProtector for SecMemProtectorByPMP {
     }
     fn disable(&self, hwid: u32) -> bool {
         self.is_managed(hwid)
-            && set_pmp_entry(
+            && set_pmp_entry_sync(
                 hwid,
                 0,
                 0,
@@ -74,7 +97,7 @@ impl SecMemProtector for SecMemProtectorByPMP {
     }
     fn enable(&self, hwid: u32) -> bool {
         self.is_managed(hwid)
-            && set_pmp_entry(
+            && set_pmp_entry_sync(
                 hwid,
                 0,
                 0,
@@ -99,11 +122,22 @@ impl SecMemProtector for SecMemProtectorByPMP {
                 &PmpConfig::new(Range::NAPOT, Permission::NONE, false),
             )
     }
-    // TODO: Must impl by IPIs
     fn grant_access_all(&self, addr: usize, len: usize, hwid: u32) -> bool {
-        true
+        self.is_managed(hwid)
+            && set_pmp_entry_sync(
+                hwid,
+                addr,
+                len,
+                &PmpConfig::new(Range::NAPOT, Permission::RWX, false),
+            )
     }
     fn retrive_access_all(&self, addr: usize, len: usize, hwid: u32) -> bool {
-        true
+        self.is_managed(hwid)
+            && set_pmp_entry_sync(
+                hwid,
+                addr,
+                len,
+                &PmpConfig::new(Range::NAPOT, Permission::NONE, false),
+            )
     }
 }

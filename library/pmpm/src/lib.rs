@@ -5,14 +5,13 @@
 //! The module consists of two parts: bitmap-based PMP slot management and software interrupt-based
 //! PMP synchronization implementation.
 #![no_std]
-#[allow(unused)]
 pub const MAX_PMP_ENTRY_COUNT: u32 = 16;
 pub const PMP_SHIFT: u32 = 2;
 
 use core::usize;
 
 use riscv::register::{
-    Permission, Pmp, Range, pmpaddr0, pmpaddr1, pmpaddr2, pmpaddr3, pmpaddr4, pmpaddr5, pmpaddr6,
+    Permission, Range, pmpaddr0, pmpaddr1, pmpaddr2, pmpaddr3, pmpaddr4, pmpaddr5, pmpaddr6,
     pmpaddr7, pmpaddr8, pmpaddr9, pmpaddr10, pmpaddr11, pmpaddr12, pmpaddr13, pmpaddr14, pmpaddr15,
     pmpcfg0, pmpcfg2,
 };
@@ -32,6 +31,15 @@ impl PmpConfig {
             perm,
             is_locked,
         }
+    }
+    pub fn range(&self) -> Range {
+        self.range
+    }
+    pub fn perm(&self) -> Permission {
+        self.perm
+    }
+    pub fn is_locked(&self) -> bool {
+        self.is_locked
     }
 }
 
@@ -71,13 +79,10 @@ impl PmpSlice {
 /// Memory region check was expect to execute before set PMP regs, to simplify PMP ops, PMPM
 /// request user check memory manual
 pub fn check_pmp_area_available(addr: usize, len: usize, range: Range) -> bool {
-    if addr & 0x3 != 0 || len < 4 {
-        return false;
-    }
     match range {
-        Range::NA4 => len == 4,
+        Range::NA4 => addr & (1 << PMP_SHIFT | ((1 << PMP_SHIFT) - 1)) == 0 && len == 4,
         Range::NAPOT => len >= 8 && (len & (len - 1) == 0) && (addr % len == 0),
-        Range::TOR => len % 4 == 0,
+        Range::TOR => addr & (1 << PMP_SHIFT | ((1 << PMP_SHIFT) - 1)) == 0 && len % 4 == 0,
         _ => true,
     }
 }
@@ -157,21 +162,38 @@ fn _set_pmp_addr(idx: u32, addr: usize) {
     }
 }
 
+//TODO: It depends on IPIs to sync PMP configuration, here is dummy implement.
+pub fn set_pmp_entry_sync(idx: u32, addr: usize, len: usize, config: &PmpConfig) -> bool {
+    set_pmp_entry(idx, addr, len, config)
+}
+
 pub fn set_pmp_entry(idx: u32, addr: usize, len: usize, config: &PmpConfig) -> bool {
-    if !check_pmp_area_available(addr, len, config.range) {
-        return false;
-    }
-    let slice = PmpSlice::new(len.ilog2(), addr, 0);
+    // The memory area should be check before function call.
+    let slice = PmpSlice::new(
+        if len == usize::MAX {
+            usize::BITS
+        } else {
+            len.ilog2()
+        },
+        addr,
+        0,
+    );
     _set_pmp_addr(idx, encode_pmp_addr(&slice, config.range));
     set_pmp_cfg(idx, config);
     true
 }
 
 pub fn set_pmp_addr(idx: u32, addr: usize, len: usize, range: Range) -> bool {
-    if !check_pmp_area_available(addr, len, range) {
-        return false;
-    }
-    let slice = PmpSlice::new(len.ilog2(), addr, 0);
+    // The memory area should be check before function call.
+    let slice = PmpSlice::new(
+        if len == usize::MAX {
+            usize::BITS
+        } else {
+            len.ilog2()
+        },
+        addr,
+        0,
+    );
     _set_pmp_addr(idx, encode_pmp_addr(&slice, range));
     true
 }
@@ -219,116 +241,244 @@ pub fn get_pmp_entry(idx: u32) -> (usize, PmpConfig) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use riscv::register::Range;
 
-    // Re-use test case calculation from analysis for predictability
-    // Helper to create test slices
-    fn pmp_slice(log2len: u32, pa_lo: usize) -> PmpSlice {
+    fn create_pmp_slice(log2len: u32, pa_lo: usize) -> PmpSlice {
         PmpSlice::new(log2len, pa_lo, 0)
     }
 
     #[test]
-    fn test_encode_napot() {
-        // E2: Full address space (XLEN=64)
-        let slice = pmp_slice(64, 0x0);
+    fn test_encode_decode_napot() {
+        let full_slice = create_pmp_slice(usize::BITS, 0x0);
+        let full_encoded = encode_pmp_addr(&full_slice, Range::NAPOT);
         assert_eq!(
-            encode_pmp_addr(&slice, Range::NAPOT),
-            Some(usize::MAX),
-            "E2"
+            full_encoded,
+            usize::MAX,
+            "NAPOT full address space encode failed"
+        );
+        let full_decoded = decode_pmp_addr(full_encoded, Range::NAPOT);
+        assert_eq!(
+            full_decoded.log2len(),
+            usize::BITS,
+            "NAPOT full address space decode log2len failed"
+        );
+        assert_eq!(
+            full_decoded.start(),
+            0x0,
+            "NAPOT full address space decode start address failed"
         );
 
-        // E3: 64KB region (2^16), pa_lo=0x10000
-        // log2len=16, k=14. addrmask = 2^14-1. pmpaddr = (0x10000>>2) | (addrmask>>1)
-        let slice = pmp_slice(16, 0x10000);
-        let expected = 0x4000 | ((1usize << 14) - 1) >> 1; // 0x4000 | 0x1FFF = 0x5FFF
-        assert_eq!(encode_pmp_addr(&slice, Range::NAPOT), Some(expected), "E3");
-
-        // Custom Test: 2MB region (2^21), pa_lo=0x400000
-        // log2len=21, k=19. pa_lo_comp = 0x400000>>2 = 0x100000.
-        // addrmask = 2^19-1. pmpaddr = 0x100000 | (addrmask>>1)
-        let slice = pmp_slice(21, 0x400000);
-        let expected = 0x100000 | ((1usize << 19) - 1) >> 1; // 0x100000 | 0x3FFFF = 0x13FFFF
+        let log2len_64kb = 16;
+        let pa_lo_64kb = 0x10000;
+        let slice_64kb = create_pmp_slice(log2len_64kb, pa_lo_64kb);
+        let expected_64kb = 0x5FFF;
+        let encoded_64kb = encode_pmp_addr(&slice_64kb, Range::NAPOT);
         assert_eq!(
-            encode_pmp_addr(&slice, Range::NAPOT),
-            Some(expected),
-            "Custom 1"
+            encoded_64kb, expected_64kb,
+            "NAPOT 64KB region encode failed"
         );
-    }
-
-    #[test]
-    fn test_decode_napot() {
-        // E2: Full address space (usize::MAX)
-        let expected = pmp_slice(usize::BITS, 0x0);
+        let decoded_64kb = decode_pmp_addr(encoded_64kb, Range::NAPOT);
         assert_eq!(
-            decode_pmp_addr(usize::MAX, Range::NAPOT),
-            expected,
-            "E2 Decode"
+            decoded_64kb.log2len(),
+            log2len_64kb,
+            "NAPOT 64KB region decode log2len failed"
+        );
+        assert_eq!(
+            decoded_64kb.start(),
+            pa_lo_64kb,
+            "NAPOT 64KB region decode start address failed"
         );
 
-        // E3: 64KB region (0x5FFF)
-        // t1 = (~0x5FFF).trailing_zeros() = 13. log2len = 13 + 2 + 1 = 16.
-        // pa_lo = (0x5FFF & ~((1<<13)-1)) << 2 = (0x5FFF & ~0x1FFF) << 2 = 0x4000 << 2 = 0x10000
-        let expected = pmp_slice(16, 0x10000);
-        assert_eq!(decode_pmp_addr(0x5FFF, Range::NAPOT), expected, "E3 Decode");
-
-        // Custom 1: 2MB region (0x13FFFF)
-        // t1 = (~0x13FFFF).trailing_zeros() = 18. log2len = 18 + 2 + 1 = 21.
-        // pa_lo = (0x13FFFF & ~((1<<18)-1)) << 2 = (0x13FFFF & ~0x3FFFF) << 2 = 0x100000 << 2 = 0x400000
-        let expected = pmp_slice(21, 0x400000);
+        let log2len_2mb = 21;
+        let pa_lo_2mb = 0x400000;
+        let slice_2mb = create_pmp_slice(log2len_2mb, pa_lo_2mb);
+        let expected_2mb = 0x100000 | ((1usize << 19) - 1) >> 1;
+        let encoded_2mb = encode_pmp_addr(&slice_2mb, Range::NAPOT);
+        assert_eq!(encoded_2mb, expected_2mb, "NAPOT 2MB region encode failed");
+        let decoded_2mb = decode_pmp_addr(encoded_2mb, Range::NAPOT);
         assert_eq!(
-            decode_pmp_addr(0x13FFFF, Range::NAPOT),
-            expected,
-            "Custom 1 Decode"
+            decoded_2mb.log2len(),
+            log2len_2mb,
+            "NAPOT 2MB region decode log2len failed"
         );
-    }
-
-    #[test]
-    fn test_na4_mode() {
-        // E4: Encode 4-byte region
-        let slice = pmp_slice(2, 0x12345678);
-        let expected_addr = 0x12345678 >> PMP_SHIFT; // 0x048D159E
         assert_eq!(
-            encode_pmp_addr(&slice, Range::NA4),
-            Some(expected_addr),
-            "E4 Encode"
-        );
-
-        // E4: Decode 4-byte region
-        let expected_slice = pmp_slice(PMP_SHIFT, 0x12345678);
-        assert_eq!(
-            decode_pmp_addr(expected_addr, Range::NA4),
-            expected_slice,
-            "E4 Decode"
+            decoded_2mb.start(),
+            pa_lo_2mb,
+            "NAPOT 2MB region decode start address failed"
         );
     }
 
     #[test]
-    fn test_tor_mode() {
-        // E5: Encode TOR bottom address
-        let slice = pmp_slice(30, 0x80000000);
-        let expected_addr = 0x80000000 >> PMP_SHIFT; // 0x20000000
+    fn test_encode_decode_na4() {
+        let pa_lo_4byte = 0x12345678;
+        let slice_4byte = create_pmp_slice(PMP_SHIFT, pa_lo_4byte);
+        let expected_encoded = pa_lo_4byte >> PMP_SHIFT;
+        let encoded_4byte = encode_pmp_addr(&slice_4byte, Range::NA4);
+        assert_eq!(encoded_4byte, expected_encoded, "NA4 mode encode failed");
+        let decoded_4byte = decode_pmp_addr(encoded_4byte, Range::NA4);
         assert_eq!(
-            encode_pmp_addr(&slice, Range::TOR),
-            Some(expected_addr),
-            "E5 Encode"
+            decoded_4byte.log2len(),
+            PMP_SHIFT,
+            "NA4 mode decode log2len failed"
         );
-
-        // E5: Decode TOR bottom address
-        let expected_slice = pmp_slice(0, 0x80000000);
         assert_eq!(
-            decode_pmp_addr(expected_addr, Range::TOR),
-            expected_slice,
-            "E5 Decode"
+            decoded_4byte.start(),
+            pa_lo_4byte,
+            "NA4 mode decode start address failed"
+        );
+        assert_eq!(decoded_4byte.len(), 4, "NA4 mode decode length failed");
+
+        let random_encoded = 0xABCDEF;
+        let decoded_random = decode_pmp_addr(random_encoded, Range::NA4);
+        assert_eq!(
+            decoded_random.len(),
+            4,
+            "NA4 mode decode should return fixed 4 bytes length"
         );
     }
 
     #[test]
-    fn test_off_mode() {
-        // E6: Encode OFF
-        let slice = pmp_slice(0, 0xFFFFFFFF);
-        assert_eq!(encode_pmp_addr(&slice, Range::OFF), Some(0), "E6 Encode");
+    fn test_encode_decode_tor() {
+        let pa_lo_tor = 0x80000000;
+        let slice_tor = create_pmp_slice(30, pa_lo_tor);
+        let expected_encoded = pa_lo_tor >> PMP_SHIFT;
+        let encoded_tor = encode_pmp_addr(&slice_tor, Range::TOR);
+        assert_eq!(encoded_tor, expected_encoded, "TOR mode encode failed");
+        let decoded_tor = decode_pmp_addr(encoded_tor, Range::TOR);
+        assert_eq!(
+            decoded_tor.start(),
+            pa_lo_tor,
+            "TOR mode decode start address failed"
+        );
+        assert_eq!(
+            decoded_tor.log2len(),
+            0,
+            "TOR mode decode should return log2len=0"
+        );
 
-        // E6: Decode OFF
-        let expected_slice = pmp_slice(0, 0);
-        assert_eq!(decode_pmp_addr(0, Range::OFF), expected_slice, "E6 Decode");
+        let pa_lo_align = 0x1000;
+        let encoded_align = encode_pmp_addr(&create_pmp_slice(0, pa_lo_align), Range::TOR);
+        let decoded_align = decode_pmp_addr(encoded_align, Range::TOR);
+        assert_eq!(
+            decoded_align.start(),
+            pa_lo_align,
+            "TOR mode aligned address decode failed"
+        );
+    }
+
+    #[test]
+    fn test_encode_decode_off() {
+        let random_slice = create_pmp_slice(10, 0xFFFFFFFF);
+        let encoded_off = encode_pmp_addr(&random_slice, Range::OFF);
+        assert_eq!(encoded_off, 0, "OFF mode encode should return 0");
+
+        let decoded_off = decode_pmp_addr(0, Range::OFF);
+        assert_eq!(
+            decoded_off.start(),
+            0,
+            "OFF mode decode start address should return 0"
+        );
+        assert_eq!(
+            decoded_off.log2len(),
+            0,
+            "OFF mode decode log2len should return 0"
+        );
+        assert_eq!(
+            decoded_off.len(),
+            1 << 0,
+            "OFF mode decode length should return 1"
+        );
+    }
+
+    #[test]
+    fn test_check_pmp_area_available() {
+        assert!(
+            !check_pmp_area_available(0x12345679, 4, Range::NA4),
+            "Address not 4-byte aligned should be invalid"
+        );
+        assert!(
+            !check_pmp_area_available(0x12345678, 2, Range::TOR),
+            "Length less than 4 bytes should be invalid"
+        );
+
+        assert!(
+            check_pmp_area_available(0x12345678, 4, Range::NA4),
+            "NA4 mode 4-byte region should be valid"
+        );
+        assert!(
+            !check_pmp_area_available(0x12345678, 8, Range::NA4),
+            "NA4 mode length greater than 4 should be invalid"
+        );
+
+        assert!(
+            check_pmp_area_available(0x10000, 65536, Range::NAPOT),
+            "NAPOT mode 64KB region should be valid"
+        );
+        assert!(
+            !check_pmp_area_available(0x10000, 65535, Range::NAPOT),
+            "NAPOT mode length not power of 2 should be invalid"
+        );
+        assert!(
+            !check_pmp_area_available(0x10001, 65536, Range::NAPOT),
+            "NAPOT mode address not aligned should be invalid"
+        );
+        assert!(
+            !check_pmp_area_available(0x10000, 4, Range::NAPOT),
+            "NAPOT mode length less than 8 should be invalid"
+        );
+
+        assert!(
+            check_pmp_area_available(0x80000000, 1024, Range::TOR),
+            "TOR mode 1024-byte region should be valid"
+        );
+        assert!(
+            !check_pmp_area_available(0x80000000, 1023, Range::TOR),
+            "TOR mode length not 4-byte aligned should be invalid"
+        );
+
+        assert!(
+            check_pmp_area_available(0x0, 0, Range::OFF),
+            "OFF mode should always be valid"
+        );
+        assert!(
+            check_pmp_area_available(0x1, 1, Range::OFF),
+            "OFF mode should always be valid"
+        );
+    }
+
+    #[test]
+    fn test_pmp_config() {
+        let range = Range::NAPOT;
+        let perm = Permission::RW;
+        let is_locked = true;
+        let pmp_cfg = PmpConfig::new(range, perm, is_locked);
+
+        assert_eq!(pmp_cfg.range(), range, "PmpConfig range attribute mismatch");
+        assert_eq!(pmp_cfg.perm(), perm, "PmpConfig perm attribute mismatch");
+        assert_eq!(
+            pmp_cfg.is_locked(),
+            is_locked,
+            "PmpConfig is_locked attribute mismatch"
+        );
+    }
+
+    #[test]
+    fn test_pmp_slice() {
+        let log2len = 10;
+        let pa_lo = 0x1000;
+        let slice = create_pmp_slice(log2len, pa_lo);
+
+        assert_eq!(slice.log2len(), log2len, "PmpSlice log2len mismatch");
+        assert_eq!(
+            slice.len(),
+            1 << log2len,
+            "PmpSlice length calculation error"
+        );
+        assert_eq!(slice.start(), pa_lo, "PmpSlice start address mismatch");
+        assert_eq!(
+            slice.end(),
+            pa_lo + (1 << log2len) - 1,
+            "PmpSlice end address calculation error"
+        );
     }
 }

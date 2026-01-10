@@ -7,8 +7,8 @@ use alloc::vec::Vec;
 use core::ptr::NonNull;
 use core::{alloc::Layout, usize};
 use log::error;
-use pmpm::{MAX_PMP_ENTRY_COUNT, bitmap::PMPSlotAllocator, check_pmp_area_available};
-use riscv::{asm::sfence_vma_all, register::Range};
+use pmpm::MAX_PMP_ENTRY_COUNT;
+use riscv::asm::sfence_vma_all;
 
 pub mod allocators;
 pub mod manager;
@@ -131,11 +131,11 @@ where
     /// Alloc enclave mem from request region of type
     fn alloc_em(&mut self, len: usize, em_type: SecMemType) -> Option<(usize, usize, usize)>;
     /// Free enclave mem back to origin region
-    fn free_em(&mut self, addr: usize, len: usize, region_id: usize) -> Option<bool>;
+    fn free_em(&mut self, addr: usize, len: usize) -> Option<usize>;
     /// Grant enclave access to certain region
-    fn grant_access(&self, region_id: usize) -> bool;
+    fn grant_access(&self, addr: usize, len: usize, region_id: usize) -> bool;
     /// Retrive enclave access to certain region
-    fn retrive_access(&self, region_id: usize) -> bool;
+    fn retrive_access(&self, addr: usize, len: usize, region_id: usize) -> bool;
 }
 
 pub trait SecMemProtector {
@@ -143,6 +143,8 @@ pub trait SecMemProtector {
     fn alloc(&mut self) -> Option<u32>;
     /// Free a hardware
     fn free(&mut self, hwid: u32) -> bool;
+    /// Check memory area can be protect by hardware or not.
+    fn is_protectable(&self, addr: usize, len: usize) -> bool;
     /// Grant access to secure mem on current hart
     fn grant_access(&self, addr: usize, len: usize, hwid: u32) -> bool;
     /// Retrive access to secure mem on current hart
