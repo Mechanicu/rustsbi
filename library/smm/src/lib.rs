@@ -13,7 +13,6 @@ use riscv::asm::sfence_vma_all;
 pub mod allocators;
 pub mod manager;
 pub mod protector;
-mod test;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum SecMemAllocatorWrapper<const ORDER: usize, AR, AA>
@@ -88,7 +87,7 @@ where
             id,
             slot: pmp_slot,
             is_used: false,
-            allocator: SecMemAllocatorWrapper::None,
+            allocator: SecMemAllocatorWrapper::General,
         }
     }
 

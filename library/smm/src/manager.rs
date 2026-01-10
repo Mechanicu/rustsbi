@@ -95,7 +95,7 @@ where
             // so SMM still clean all data in secure memory when deinit to avoid any protected data leap.
             unsafe {
                 core::ptr::write_bytes(region.addr as *mut u8, 0, region.len);
-                sfence_vma_all();
+                // sfence_vma_all();
             }
             // Disable hardware used to protect region.
             cur_regions[count] = (region.addr, region.len);
@@ -157,8 +157,7 @@ where
 
     fn alloc_em(&mut self, len: usize, em_type: SecMemType) -> Option<(usize, usize, usize)> {
         // Init alloc layout, size must be power of 2
-        let expect_len = len.next_power_of_two();
-        let alloc_layout = Layout::from_size_align(expect_len, expect_len).ok()?;
+        let mut expect_len = len.next_power_of_two();
 
         for region in self.alloc_regions.iter_mut() {
             if region.len < len {
@@ -185,22 +184,23 @@ where
                 SecMemAllocatorWrapper::Runtime(alloc)
                     if matches!(em_type, SecMemType::Runtime)
                     // Pre-allocation capacity check
-                        && (alloc.available() >= alloc_layout.size()) =>
+                        && (alloc.available() >= expect_len) =>
                 {
-                    alloc.alloc(alloc_layout)
+                    expect_len = alloc.available();
+                    alloc.alloc(Layout::from_size_align(expect_len, expect_len).ok()?)
                 }
                 SecMemAllocatorWrapper::Application(alloc)
                     if matches!(em_type, SecMemType::Application)
                     // Pre-allocation capacity check
-                        && (alloc.available() >= alloc_layout.size()) =>
+                        && (alloc.available() >= expect_len) =>
                 {
-                    alloc.alloc(alloc_layout)
+                    alloc.alloc(Layout::from_size_align(expect_len, expect_len).ok()?)
                 }
                 _ => Err(()),
             } {
                 // If alloc successfully, get addr and idx of region
                 region.is_used = true;
-                return Some((ptr.as_ptr() as usize, alloc_layout.size(), region.id));
+                return Some((ptr.as_ptr() as usize, expect_len, region.id));
             }
         }
         None
@@ -219,7 +219,7 @@ where
             // Clean enclave memory to avoid data leap between enclaves and when host request reclaim
             unsafe {
                 core::ptr::write_bytes(addr as *mut u8, 0, len);
-                sfence_vma_all();
+                // sfence_vma_all();
             }
             return match &mut free_region.allocator {
                 SecMemAllocatorWrapper::Application(alloc) => {
@@ -276,5 +276,224 @@ where
             );
         }
         false
+    }
+}
+
+use core::fmt::{Result, Write};
+impl<const ORDER: usize, AR, AA> UniSecMemManager<ORDER, AR, AA>
+where
+    AR: SecMemAllocator<ORDER>,
+    AA: SecMemAllocator<ORDER>,
+{
+    /// 打印当前所有内存区域的详细状态
+    pub fn dump_to<W: Write>(&self, w: &mut W) -> Result {
+        writeln!(w, "\n--- [UniSecMemManager Dump] ---")?;
+        writeln!(
+            w,
+            "Total Configured Regions: {}",
+            self.alloc_regions.len() + self.reserved_regions.len()
+        )?;
+
+        // 1. 打印 SM 预留区域
+        writeln!(w, "\n[Reserved Regions (SM)]")?;
+        for r in &self.reserved_regions {
+            writeln!(
+                w,
+                "  ID: {:2} | Range: [0x{:016x} - 0x{:016x}] | PMP_Slot: {:<2} | Type: SM/Reserved",
+                r.id,
+                r.addr,
+                r.addr + r.len,
+                r.slot
+            )?;
+        }
+
+        // 2. 打印可分配区域
+        writeln!(w, "\n[Allocatable Regions]")?;
+        if self.alloc_regions.is_empty() {
+            writeln!(w, "  (None)")?;
+        }
+
+        for r in &self.alloc_regions {
+            let (type_str, used, total) = match &r.allocator {
+                SecMemAllocatorWrapper::General => ("General    ", 0, r.len),
+                SecMemAllocatorWrapper::Runtime(alloc) => (
+                    "Runtime    ",
+                    alloc.total() - alloc.available(),
+                    alloc.total(),
+                ),
+                SecMemAllocatorWrapper::Application(alloc) => (
+                    "Application",
+                    alloc.total() - alloc.available(),
+                    alloc.total(),
+                ),
+                SecMemAllocatorWrapper::None => ("None", 0, 0),
+            };
+
+            let usage_pcnt = if total > 0 { (used * 100) / total } else { 0 };
+            let status = if r.is_used { "IN_USE" } else { "IDLE  " };
+
+            writeln!(
+                w,
+                "  ID: {:2} | Range: [0x{:016x} - 0x{:016x}] | PMP: {:<2} | [{}] | Type: {} | Usage: {:3}% ({:0x}  / {:0x})",
+                r.id,
+                r.addr,
+                r.addr + r.len,
+                r.slot,
+                status,
+                type_str,
+                usage_pcnt,
+                used,
+                total
+            )?;
+        }
+        writeln!(w, "--- [End of Dump] ---\n")
+    }
+}
+
+#[cfg(test)]
+mod smm_stress_tests {
+    extern crate std;
+    use crate::allocators::AppAlloc;
+    use crate::allocators::RTAlloc;
+
+    use super::*;
+    use rand::{Rng, SeedableRng, rngs::StdRng};
+    use std::println;
+    use std::vec;
+
+    // 常量定义
+    const POOL_SIZE: usize = 512 * 1024 * 1024; // 512MB
+    const MAX_ALLOC: usize = 16 * 1024 * 1024; // 16MB
+    const REGION_COUNT: usize = 8; // 8个Region，每个64MB
+
+    struct StdOut;
+    impl Write for StdOut {
+        fn write_str(&mut self, s: &str) -> Result {
+            std::print!("{}", s);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_uni_secmem_manager_stress_aligned() {
+        // --- 1. 申请内存并确保对齐后剩余空间足够 ---
+        // 申请 POOL_SIZE * 2 的空间，确保能切出一段对齐的 POOL_SIZE
+        let mut raw_buffer = vec![0u8; POOL_SIZE * 2];
+        let raw_addr = raw_buffer.as_mut_ptr() as usize;
+        let mut out = StdOut {};
+
+        // 对齐计算：向上取整到 POOL_SIZE 的倍数
+        let align_mask = POOL_SIZE - 1;
+        let aligned_base = (raw_addr + align_mask) & !align_mask;
+
+        // 验证对齐和剩余空间
+        assert_eq!(
+            aligned_base % POOL_SIZE,
+            0,
+            "Base address is not aligned to size"
+        );
+        assert!(
+            aligned_base + POOL_SIZE <= raw_addr + (POOL_SIZE * 2),
+            "Remaining space insufficient"
+        );
+
+        println!("Memory Pool Info:");
+        println!("  Raw Buffer:  0x{:x}", raw_addr);
+        println!("  Aligned Base: 0x{:x}", aligned_base);
+        println!("  Pool End:    0x{:x}", aligned_base + POOL_SIZE);
+
+        // --- 2. 初始化 UniSecMemManager ---
+        // 使用你提供的 RTAlloc 和 AppAlloc
+        let mut manager = UniSecMemManager::<30, RTAlloc<30>, AppAlloc<30>>::new();
+
+        // SM 初始化（Mock地址，不参与分配）
+        assert!(manager.init(0x1000, 0x1000));
+
+        // --- 3. 填充 Region ---
+        let region_len = POOL_SIZE / REGION_COUNT;
+        for i in 0..REGION_COUNT {
+            let addr = aligned_base + (i * region_len);
+            assert!(
+                manager.extend(addr, region_len),
+                "Extend failed at region {}",
+                i
+            );
+        }
+
+        // --- 4. 执行压力测试循环 ---
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut allocations = Vec::new();
+        let iterations = 10000;
+        let mut alloc_count = 0;
+
+        for i in 0..iterations {
+            // 70% 概率分配，30% 概率释放
+            if rng.gen_bool(0.7) || allocations.is_empty() {
+                let em_type = if rng.gen_bool(0.5) {
+                    SecMemType::Application
+                } else {
+                    SecMemType::Application
+                };
+
+                // 随机大小：2^12 (4KB) 到 2^24 (16MB)
+                let exponent = rng.gen_range(12..MAX_ALLOC.ilog2());
+                let size = 1usize << exponent;
+
+                if let Some((addr, actual_len, id)) = manager.alloc_em(size, em_type) {
+                    // println!("Alloc, addr:0x{:x} actual_len:0x{:x}", addr, actual_len);
+                    // 真实读写测试：确保分配的内存是可操作的真实内存
+                    unsafe {
+                        let ptr = addr as *mut u8;
+                        core::ptr::write_bytes(ptr, 0x1F, actual_len);
+                        assert_eq!(core::ptr::read_volatile(ptr), 0x1F);
+                    }
+                    alloc_count += 1;
+                    allocations.push((addr, actual_len, em_type));
+                }
+            } else {
+                // 随机选择一个已分配块释放
+                let idx = rng.gen_range(0..allocations.len());
+                let (addr, len, _) = allocations.remove(idx);
+                // println!("Free, addr:0x{:x} actual_len:0x{:x}", addr, len);
+                assert!(manager.free_em(addr, len).is_some());
+
+                // 验证 Sanitization：检查 free_em 是否成功将内存零化
+                unsafe {
+                    assert_eq!(
+                        *(addr as *const u8),
+                        0,
+                        "Memory sanitization failed at 0x{:x}",
+                        addr
+                    );
+                }
+            }
+
+            if i % 500 == 0 {
+                println!("  Iter {}: Allocated blocks = {}", i, allocations.len());
+                let _ = manager.dump_to(&mut out);
+            }
+        }
+
+        // --- 5. 清理并验证状态回转 ---
+        println!("Finalizing: Cleaning up all blocks...");
+        for (addr, len, _) in allocations {
+            manager.free_em(addr, len);
+        }
+        let _ = manager.dump_to(&mut out);
+        // 只有当所有分配器（Buddy 和 RT）都回到全空状态，
+        // Manager 才会把 Region 改回 General，此时 reclaim 才能成功。
+        let mut reclaimed_count = 0;
+        while let Some(_) = manager.reclaim() {
+            reclaimed_count += 1;
+        }
+
+        assert_eq!(
+            reclaimed_count, REGION_COUNT,
+            "State machine error: Not all regions returned to General"
+        );
+        println!(
+            "Test Passed: All {} regions reclaimed, success alloc {}, total request {}.",
+            reclaimed_count, alloc_count, iterations
+        );
     }
 }

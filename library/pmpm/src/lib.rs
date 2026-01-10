@@ -80,9 +80,9 @@ impl PmpSlice {
 /// request user check memory manual
 pub fn check_pmp_area_available(addr: usize, len: usize, range: Range) -> bool {
     match range {
-        Range::NA4 => addr & (1 << PMP_SHIFT | ((1 << PMP_SHIFT) - 1)) == 0 && len == 4,
+        Range::NA4 => (addr & ((1 << PMP_SHIFT) - 1)) == 0 && len == 4,
         Range::NAPOT => len >= 8 && (len & (len - 1) == 0) && (addr % len == 0),
-        Range::TOR => addr & (1 << PMP_SHIFT | ((1 << PMP_SHIFT) - 1)) == 0 && len % 4 == 0,
+        Range::TOR => (addr & ((1 << PMP_SHIFT) - 1)) == 0 && len % 4 == 0,
         _ => true,
     }
 }

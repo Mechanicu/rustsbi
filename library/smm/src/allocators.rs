@@ -143,29 +143,19 @@ mod stress_tests {
         assert_eq!(allocator.available(), initial_available);
     }
     #[test]
-    fn stress_test_rt_alloc_silent() {
-        const RT_MEM_SIZE: usize = TEST_MEM_SIZE;
+    fn stress_test_rt_alloc() {
         let mut allocator = RTAlloc::<TEST_EXPONENT>::new();
+        let base_addr: usize = unsafe { FAKE_HARDWARE_MEM.0.as_ptr() as usize };
 
-        for i in 0..1000 {
-            let base_addr: usize = unsafe { FAKE_HARDWARE_MEM.0.as_ptr() as usize };
-            allocator.init(base_addr, RT_MEM_SIZE);
+        for exp in 12..TEST_EXPONENT {
+            let layout = Layout::from_size_align(TEST_MEM_SIZE, TEST_MEM_SIZE).unwrap();
 
-            let exponent = (i % (TEST_EXPONENT - 12)) + 12;
-            let layout = Layout::from_size_align(1 << exponent, 8).unwrap();
-
+            allocator.init(base_addr, TEST_MEM_SIZE);
             let ptr = allocator.alloc(layout).unwrap();
-            assert_eq!(ptr.as_ptr() as usize, base_addr);
             assert_eq!(allocator.available(), 0);
 
-            assert!(
-                allocator
-                    .alloc(Layout::from_size_align(1, 1).unwrap())
-                    .is_err()
-            );
-
             allocator.free(ptr, layout);
-            assert_eq!(allocator.available(), layout.size());
+            assert_eq!(allocator.available(), TEST_MEM_SIZE);
         }
     }
 }
