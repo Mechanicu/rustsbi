@@ -1,3 +1,10 @@
+//! Secure Memory Manager Hardware Protectors
+//!
+//! Implementation of `SecMemProtector` using RISC-V PMP with **NAPOT** mode.
+//! Manages hardware isolation for **RT** (Runtime) and **APP** (Application) enclaves.
+//! Includes `TestSecMemProtector` for mock testing and `SecMemProtectorByPMP` for production HAL.
+//! Supports **RWX** permission toggling and cross-core **sync**.
+
 use super::SecMemProtector;
 use core::usize;
 use pmpm::{

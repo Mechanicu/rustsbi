@@ -1,3 +1,10 @@
+//! Secure Memory Region Allocators
+//!
+//! Concrete **SecMemAllocator** examples for diverse TEE memory paradigms.
+//! **AppAlloc**: Shared-region management using **Buddy System** (Penglai-style).
+//! **RTAlloc**: Exclusive-region occupation for **RT** enclaves (Keystone-style).
+//! Ensures security via strict **2^n** alignment and full-state recovery tests.
+
 use super::SecMemAllocator;
 use buddy_system_allocator::Heap;
 use core::alloc::Layout;

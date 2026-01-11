@@ -1,14 +1,16 @@
-//! Penglai/Keystone style secure memory management module.
+//! Secure Memory Management Core Traits
+//!
+//! Abstractions for TEE memory management and hardware isolation.
+//! Defines **SecMemManager** (orchestration), **SecMemAllocator** (allocation logic),
+//! and **SecMemProtector** (hardware HAL) for **RT** and **APP** enclaves.
+//! Serves as the base for Penglai/Keystone-style secure memory implementations.
 #![no_std]
-#[allow(unused)]
 extern crate alloc;
 use crate::allocators::NoneAlloc;
-use alloc::vec::Vec;
 use core::ptr::NonNull;
 use core::{alloc::Layout, usize};
 use log::error;
 use pmpm::MAX_PMP_ENTRY_COUNT;
-use riscv::asm::sfence_vma_all;
 
 pub mod allocators;
 pub mod manager;
@@ -131,9 +133,9 @@ where
     fn alloc_em(&mut self, len: usize, em_type: SecMemType) -> Option<(usize, usize, usize)>;
     /// Free enclave mem back to origin region
     fn free_em(&mut self, addr: usize, len: usize) -> Option<usize>;
-    /// Grant enclave access to certain region
+    /// Grant access to certain memory area on current hart.
     fn grant_access(&self, addr: usize, len: usize, region_id: usize) -> bool;
-    /// Retrive enclave access to certain region
+    /// Retrive access to certain memory area on current hart.
     fn retrive_access(&self, addr: usize, len: usize, region_id: usize) -> bool;
 }
 

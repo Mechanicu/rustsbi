@@ -1,7 +1,14 @@
-use core::usize;
+//! Unified Secure Memory Manager
+//!
+//! A concrete **SecMemManager** instance for unified TEE memory management.
+//! Orchestrates **RT** (exclusive) and **APP** (shared) enclave memory styles.
+//! Implements hardware isolation via **protectors** and secure sanitization.
+//! Manages **Region** lifecycle from **General** to specialized enclave states.
 
 use super::*;
 use crate::protector::TestSecMemProtector;
+use alloc::vec::Vec;
+use core::usize;
 
 type UniSecMemProtector = TestSecMemProtector;
 
@@ -279,77 +286,6 @@ where
     }
 }
 
-use core::fmt::{Result, Write};
-impl<const ORDER: usize, AR, AA> UniSecMemManager<ORDER, AR, AA>
-where
-    AR: SecMemAllocator<ORDER>,
-    AA: SecMemAllocator<ORDER>,
-{
-    /// 打印当前所有内存区域的详细状态
-    pub fn dump_to<W: Write>(&self, w: &mut W) -> Result {
-        writeln!(w, "\n--- [UniSecMemManager Dump] ---")?;
-        writeln!(
-            w,
-            "Total Configured Regions: {}",
-            self.alloc_regions.len() + self.reserved_regions.len()
-        )?;
-
-        // 1. 打印 SM 预留区域
-        writeln!(w, "\n[Reserved Regions (SM)]")?;
-        for r in &self.reserved_regions {
-            writeln!(
-                w,
-                "  ID: {:2} | Range: [0x{:016x} - 0x{:016x}] | PMP_Slot: {:<2} | Type: SM/Reserved",
-                r.id,
-                r.addr,
-                r.addr + r.len,
-                r.slot
-            )?;
-        }
-
-        // 2. 打印可分配区域
-        writeln!(w, "\n[Allocatable Regions]")?;
-        if self.alloc_regions.is_empty() {
-            writeln!(w, "  (None)")?;
-        }
-
-        for r in &self.alloc_regions {
-            let (type_str, used, total) = match &r.allocator {
-                SecMemAllocatorWrapper::General => ("General    ", 0, r.len),
-                SecMemAllocatorWrapper::Runtime(alloc) => (
-                    "Runtime    ",
-                    alloc.total() - alloc.available(),
-                    alloc.total(),
-                ),
-                SecMemAllocatorWrapper::Application(alloc) => (
-                    "Application",
-                    alloc.total() - alloc.available(),
-                    alloc.total(),
-                ),
-                SecMemAllocatorWrapper::None => ("None", 0, 0),
-            };
-
-            let usage_pcnt = if total > 0 { (used * 100) / total } else { 0 };
-            let status = if r.is_used { "IN_USE" } else { "IDLE  " };
-
-            writeln!(
-                w,
-                "  ID: {:2} | Range: [0x{:016x} - 0x{:016x}] | PMP: {:<2} | [{}] | Type: {} | Usage: {:3}% ({:0x}  / {:0x})",
-                r.id,
-                r.addr,
-                r.addr + r.len,
-                r.slot,
-                status,
-                type_str,
-                usage_pcnt,
-                used,
-                total
-            )?;
-        }
-        writeln!(w, "--- [End of Dump] ---\n")
-    }
-}
-
 #[cfg(test)]
 mod smm_stress_tests {
     extern crate std;
@@ -373,20 +309,85 @@ mod smm_stress_tests {
             Ok(())
         }
     }
+    use core::fmt::{Result, Write};
+    impl<const ORDER: usize, AR, AA> UniSecMemManager<ORDER, AR, AA>
+    where
+        AR: SecMemAllocator<ORDER>,
+        AA: SecMemAllocator<ORDER>,
+    {
+        /// Print all region's information in current manager.
+        pub fn dump_to<W: Write>(&self, w: &mut W) -> Result {
+            writeln!(w, "\n--- [UniSecMemManager Dump] ---")?;
+            writeln!(
+                w,
+                "Total Configured Regions: {}",
+                self.alloc_regions.len() + self.reserved_regions.len()
+            )?;
 
+            // 1. 打印 SM 预留区域
+            writeln!(w, "\n[Reserved Regions (SM)]")?;
+            for r in &self.reserved_regions {
+                writeln!(
+                    w,
+                    "  ID: {:2} | Range: [0x{:016x} - 0x{:016x}] | PMP_Slot: {:<2} | Type: SM/Reserved",
+                    r.id,
+                    r.addr,
+                    r.addr + r.len,
+                    r.slot
+                )?;
+            }
+
+            // 2. 打印可分配区域
+            writeln!(w, "\n[Allocatable Regions]")?;
+            if self.alloc_regions.is_empty() {
+                writeln!(w, "  (None)")?;
+            }
+
+            for r in &self.alloc_regions {
+                let (type_str, used, total) = match &r.allocator {
+                    SecMemAllocatorWrapper::General => ("General    ", 0, r.len),
+                    SecMemAllocatorWrapper::Runtime(alloc) => (
+                        "Runtime    ",
+                        alloc.total() - alloc.available(),
+                        alloc.total(),
+                    ),
+                    SecMemAllocatorWrapper::Application(alloc) => (
+                        "Application",
+                        alloc.total() - alloc.available(),
+                        alloc.total(),
+                    ),
+                    SecMemAllocatorWrapper::None => ("None", 0, 0),
+                };
+
+                let usage_pcnt = if total > 0 { (used * 100) / total } else { 0 };
+                let status = if r.is_used { "IN_USE" } else { "IDLE  " };
+
+                writeln!(
+                    w,
+                    "  ID: {:2} | Range: [0x{:016x} - 0x{:016x}] | PMP: {:<2} | [{}] | Type: {} | Usage: {:3}% ({:0x}  / {:0x})",
+                    r.id,
+                    r.addr,
+                    r.addr + r.len,
+                    r.slot,
+                    status,
+                    type_str,
+                    usage_pcnt,
+                    used,
+                    total
+                )?;
+            }
+            writeln!(w, "--- [End of Dump] ---\n")
+        }
+    }
     #[test]
     fn test_uni_secmem_manager_stress_aligned() {
-        // --- 1. 申请内存并确保对齐后剩余空间足够 ---
-        // 申请 POOL_SIZE * 2 的空间，确保能切出一段对齐的 POOL_SIZE
         let mut raw_buffer = vec![0u8; POOL_SIZE * 2];
         let raw_addr = raw_buffer.as_mut_ptr() as usize;
         let mut out = StdOut {};
 
-        // 对齐计算：向上取整到 POOL_SIZE 的倍数
         let align_mask = POOL_SIZE - 1;
         let aligned_base = (raw_addr + align_mask) & !align_mask;
 
-        // 验证对齐和剩余空间
         assert_eq!(
             aligned_base % POOL_SIZE,
             0,
@@ -402,14 +403,10 @@ mod smm_stress_tests {
         println!("  Aligned Base: 0x{:x}", aligned_base);
         println!("  Pool End:    0x{:x}", aligned_base + POOL_SIZE);
 
-        // --- 2. 初始化 UniSecMemManager ---
-        // 使用你提供的 RTAlloc 和 AppAlloc
         let mut manager = UniSecMemManager::<30, RTAlloc<30>, AppAlloc<30>>::new();
 
-        // SM 初始化（Mock地址，不参与分配）
         assert!(manager.init(0x1000, 0x1000));
 
-        // --- 3. 填充 Region ---
         let region_len = POOL_SIZE / REGION_COUNT;
         for i in 0..REGION_COUNT {
             let addr = aligned_base + (i * region_len);
@@ -420,14 +417,12 @@ mod smm_stress_tests {
             );
         }
 
-        // --- 4. 执行压力测试循环 ---
         let mut rng = StdRng::seed_from_u64(42);
         let mut allocations = Vec::new();
         let iterations = 10000;
         let mut alloc_count = 0;
 
         for i in 0..iterations {
-            // 70% 概率分配，30% 概率释放
             if rng.gen_bool(0.7) || allocations.is_empty() {
                 let em_type = if rng.gen_bool(0.5) {
                     SecMemType::Application
@@ -435,13 +430,10 @@ mod smm_stress_tests {
                     SecMemType::Application
                 };
 
-                // 随机大小：2^12 (4KB) 到 2^24 (16MB)
                 let exponent = rng.gen_range(12..MAX_ALLOC.ilog2());
                 let size = 1usize << exponent;
 
                 if let Some((addr, actual_len, id)) = manager.alloc_em(size, em_type) {
-                    // println!("Alloc, addr:0x{:x} actual_len:0x{:x}", addr, actual_len);
-                    // 真实读写测试：确保分配的内存是可操作的真实内存
                     unsafe {
                         let ptr = addr as *mut u8;
                         core::ptr::write_bytes(ptr, 0x1F, actual_len);
@@ -451,13 +443,10 @@ mod smm_stress_tests {
                     allocations.push((addr, actual_len, em_type));
                 }
             } else {
-                // 随机选择一个已分配块释放
                 let idx = rng.gen_range(0..allocations.len());
                 let (addr, len, _) = allocations.remove(idx);
-                // println!("Free, addr:0x{:x} actual_len:0x{:x}", addr, len);
                 assert!(manager.free_em(addr, len).is_some());
 
-                // 验证 Sanitization：检查 free_em 是否成功将内存零化
                 unsafe {
                     assert_eq!(
                         *(addr as *const u8),
@@ -474,14 +463,12 @@ mod smm_stress_tests {
             }
         }
 
-        // --- 5. 清理并验证状态回转 ---
         println!("Finalizing: Cleaning up all blocks...");
         for (addr, len, _) in allocations {
             manager.free_em(addr, len);
         }
         let _ = manager.dump_to(&mut out);
-        // 只有当所有分配器（Buddy 和 RT）都回到全空状态，
-        // Manager 才会把 Region 改回 General，此时 reclaim 才能成功。
+
         let mut reclaimed_count = 0;
         while let Some(_) = manager.reclaim() {
             reclaimed_count += 1;
@@ -491,9 +478,12 @@ mod smm_stress_tests {
             reclaimed_count, REGION_COUNT,
             "State machine error: Not all regions returned to General"
         );
+
+        let mut cur_regions = [(0usize, 0usize); MAX_PMP_ENTRY_COUNT as usize];
+        let deinit_count = manager.deinit(&mut cur_regions);
         println!(
-            "Test Passed: All {} regions reclaimed, success alloc {}, total request {}.",
-            reclaimed_count, alloc_count, iterations
+            "Test Passed: All {} regions reclaimed, deinit count {}, success alloc {}, total request {}.",
+            reclaimed_count, deinit_count, alloc_count, iterations
         );
     }
 }
